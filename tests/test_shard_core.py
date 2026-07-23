@@ -2,7 +2,7 @@
 
 import unittest
 
-from shard_core import core
+from shard_core import core, slip39
 
 # Fast scrypt cost for tests only. Production default is 2**17.
 FAST_N = 12
@@ -43,9 +43,10 @@ class TestProtectRecover(unittest.TestCase):
         shards = core.protect(secret, threshold=3, shares=5)
         self.assertEqual(core.recover([shards[4], shards[1], shards[0]]), secret)
 
-    def test_1_of_1(self):
-        shards = core.protect(b"solo", threshold=1, shares=1)
-        self.assertEqual(core.recover(shards), b"solo")
+    def test_threshold_min_2(self):
+        # a single share must never reconstruct the secret
+        with self.assertRaises(ValueError):
+            core.protect(b"solo", threshold=1, shares=3)
 
     def test_tampered_shard_detected(self):
         import base64
@@ -67,6 +68,35 @@ class TestProtectRecover(unittest.TestCase):
     def test_bad_params(self):
         with self.assertRaises(ValueError):
             core.protect(b"x", threshold=4, shares=3)
+
+
+@unittest.skipUnless(slip39.available(), "slip39 extra not installed")
+class TestSlip39(unittest.TestCase):
+    def test_master_secret_2_of_3(self):
+        secret = bytes(range(32))
+        shares = slip39.split_master_secret(secret, threshold=2, shares=3)
+        self.assertEqual(len(shares), 3)
+        for combo in [(0, 1), (0, 2), (1, 2)]:
+            self.assertEqual(slip39.combine([shares[i] for i in combo]), secret)
+
+    def test_bip39_roundtrip(self):
+        from mnemonic import Mnemonic
+
+        phrase = Mnemonic("english").generate(strength=128)  # valid 12-word BIP-39
+        shares = slip39.split_bip39(phrase, threshold=2, shares=3)
+        entropy = slip39.combine([shares[1], shares[2]])
+        self.assertEqual(slip39.entropy_to_bip39(entropy), phrase)
+
+    def test_passphrase_required(self):
+        secret = bytes(range(16))
+        shares = slip39.split_master_secret(secret, 2, 3, passphrase=b"TREZOR")
+        # right passphrase recovers; empty passphrase yields a different (wrong) secret
+        self.assertEqual(slip39.combine([shares[0], shares[1]], passphrase=b"TREZOR"), secret)
+        self.assertNotEqual(slip39.combine([shares[0], shares[1]], passphrase=b""), secret)
+
+    def test_bad_length_rejected(self):
+        with self.assertRaises(ValueError):
+            slip39.split_master_secret(b"12345", 2, 3)  # 5 bytes, invalid
 
 
 if __name__ == "__main__":

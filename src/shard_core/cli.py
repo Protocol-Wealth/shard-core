@@ -15,9 +15,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import __version__, core
-
-DEFAULT_FORDEFI_LABELS = "coincover,bitwarden,offline"
+from . import __version__, core, slip39
 
 
 # --------------------------------------------------------------------------- #
@@ -145,21 +143,115 @@ def _cmd_fordefi_split(args) -> None:
     phrase = phrase.rstrip(b"\r\n")
     if not phrase:
         sys.exit("error: empty recovery phrase")
-    labels = args.labels.split(",")
-    _do_protect(phrase, args.threshold, args.shares, args.out_dir, labels, "fordefi")
-    print("\nFordefi: distribute one shard per location (e.g. coincover / bitwarden / offline).")
-    print("Coincover is storage-only and cannot decrypt a shard; the threshold stays with you.")
-    print("To recover the phrase later: `shard-core fordefi combine <shards...>` (offline), then")
-    print("feed it to Fordefi's recovery-tool. Do this only on an airgapped machine.")
+    labels = args.labels.split(",") if args.labels else [f"{i:02d}" for i in range(1, args.shares + 1)]
+    if args.slip39:
+        try:
+            mnemonics = slip39.split_bip39(phrase.decode(), args.threshold, args.shares)
+        except Exception as exc:
+            sys.exit(f"error: {exc}\n(the phrase must be a valid BIP-39 mnemonic for SLIP-39; "
+                     f"otherwise omit --slip39 to use AEAD+Shamir shards)")
+        _do_slip39_split(mnemonics, args.out_dir, labels, "fordefi", args.threshold, args.shares, "bip39")
+    else:
+        _do_protect(phrase, args.threshold, args.shares, args.out_dir, labels, "fordefi")
+    print("\nGive one share to each holder; store them in separate places.")
+    print(f"Any {args.threshold} shares together rebuild the phrase; fewer reveal nothing.")
+    print("A holder that only stores a share cannot rebuild anything alone.")
+    print("To recover later, run `shard-core fordefi combine ...` offline, then feed the phrase")
+    print("to Fordefi's recovery-tool. Do this only on an airgapped machine.")
 
 
 def _cmd_fordefi_combine(args) -> None:
-    shard_b64 = [_read_shard_file(p) for p in args.shards]
-    try:
-        phrase = core.recover(shard_b64)
-    except ValueError as exc:
-        sys.exit(f"error: {exc}")
+    if args.slip39:
+        mnemonics = [_read_mnemonic_file(p) for p in args.shards]
+        try:
+            phrase = slip39.entropy_to_bip39(slip39.combine(mnemonics)).encode()
+        except Exception as exc:
+            sys.exit(f"error: {exc}")
+    else:
+        shard_b64 = [_read_shard_file(p) for p in args.shards]
+        try:
+            phrase = core.recover(shard_b64)
+        except ValueError as exc:
+            sys.exit(f"error: {exc}")
     _write_secret(args.output, phrase)
+
+
+# --------------------------------------------------------------------------- #
+# SLIP-39 (optional; needs the `slip39` extra)
+# --------------------------------------------------------------------------- #
+def _slip39_passphrase(args) -> bytes:
+    if getattr(args, "passphrase_env", None):
+        val = os.environ.get(args.passphrase_env)
+        if val is None:
+            sys.exit(f"error: env var {args.passphrase_env} is not set")
+        return val.encode()
+    if getattr(args, "passphrase_file", None):
+        return Path(args.passphrase_file).read_bytes().rstrip(b"\r\n")
+    return b""
+
+
+def _read_mnemonic_file(path: str) -> str:
+    lines = Path(path).read_text().splitlines()
+    words = " ".join(ln.strip() for ln in lines if ln.strip() and not ln.lstrip().startswith("#"))
+    return " ".join(words.split())
+
+
+def _write_mnemonic_share(out_dir, label, mnemonic, mode, k, n, i, source) -> str:
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    path = os.path.join(out_dir, f"share-{label}.txt")
+    tag = f" [{label}]" if label else ""
+    comment = f"# shard-core v1 {mode}({source}) SLIP-39 {k}-of-{n} share {i}/{n}{tag}\n"
+    _write_text(path, comment + mnemonic + "\n")
+    return path
+
+
+def _do_slip39_split(mnemonics, out_dir, labels, mode, k, n, source) -> None:
+    if len(labels) != n:
+        sys.exit(f"error: {len(labels)} label(s) for {n} shares")
+    written = [
+        _write_mnemonic_share(out_dir, label, mn, mode, k, n, i, source)
+        for i, (mn, label) in enumerate(zip(mnemonics, labels), start=1)
+    ]
+    print(f"wrote {n} SLIP-39 share(s), any {k} reconstruct:")
+    for p in written:
+        print(f"  {p}")
+    print("\nEach share is a checksummed SLIP-39 word list; store one per location.")
+
+
+def _cmd_slip39_split(args) -> None:
+    provided = [bool(args.bip39_file), bool(args.hex), bool(args.secret_file)]
+    if sum(provided) != 1:
+        sys.exit("error: provide exactly one of --bip39-file / --hex / --secret-file")
+    pw = _slip39_passphrase(args)
+    labels = args.labels.split(",") if args.labels else [f"{i:02d}" for i in range(1, args.shares + 1)]
+    try:
+        if args.bip39_file:
+            phrase = Path(args.bip39_file).read_text().strip()
+            mnemonics, source = slip39.split_bip39(phrase, args.threshold, args.shares, pw), "bip39"
+        elif args.hex:
+            secret = bytes.fromhex(args.hex)
+            mnemonics, source = slip39.split_master_secret(secret, args.threshold, args.shares, pw), "hex"
+        else:
+            secret = Path(args.secret_file).read_bytes()
+            mnemonics, source = slip39.split_master_secret(secret, args.threshold, args.shares, pw), "raw"
+    except Exception as exc:
+        sys.exit(f"error: {exc}")
+    _do_slip39_split(mnemonics, args.out_dir, labels, "slip39", args.threshold, args.shares, source)
+
+
+def _cmd_slip39_combine(args) -> None:
+    pw = _slip39_passphrase(args)
+    mnemonics = [_read_mnemonic_file(p) for p in args.shares]
+    try:
+        secret = slip39.combine(mnemonics, pw)
+    except Exception as exc:
+        sys.exit(f"error: {exc}")
+    if args.bip39:
+        _write_text(args.output, slip39.entropy_to_bip39(secret) + "\n")
+    elif args.hex:
+        _write_text(args.output, secret.hex() + "\n")
+    else:
+        _write_secret(args.output, secret)
 
 
 # --------------------------------------------------------------------------- #
@@ -216,19 +308,59 @@ def build_parser() -> argparse.ArgumentParser:
     fds.add_argument("-t", "--threshold", type=int, default=2, help="shards needed (default 2)")
     fds.add_argument("-n", "--shares", type=int, default=3, help="total shards (default 3)")
     fds.add_argument("--phrase-file", help="file with the phrase (else prompt)")
-    fds.add_argument("--labels", default=DEFAULT_FORDEFI_LABELS, help="comma-separated labels")
+    fds.add_argument("--labels", help="comma-separated labels (default: numbered 01..0n)")
     fds.add_argument("-o", "--out-dir", default="fordefi-shards", dest="out_dir", help="output directory")
+    fds.add_argument("--slip39", action="store_true",
+                     help="emit SLIP-39 word-list shares (phrase must be valid BIP-39)")
     fds.set_defaults(func=_cmd_fordefi_split)
 
     fdc = fdsub.add_parser("combine", help="recover a Fordefi recovery phrase")
     fdc.add_argument("-o", "--output", default="-", help="output file, or - for stdout")
     fdc.add_argument("shards", nargs="+", help="shard files (>= threshold)")
+    fdc.add_argument("--slip39", action="store_true", help="shards are SLIP-39 word lists")
     fdc.set_defaults(func=_cmd_fordefi_combine)
+
+    s39 = sub.add_parser("slip39", help="SLIP-39 word-list shares (needs the 'slip39' extra)")
+    s39sub = s39.add_subparsers(dest="slip39_command", required=True)
+
+    s39s = s39sub.add_parser("split", help="split a 16/32-byte secret or BIP-39 phrase into SLIP-39 shares")
+    s39s.add_argument("-t", "--threshold", type=int, required=True, help="shares needed (k)")
+    s39s.add_argument("-n", "--shares", type=int, required=True, help="total shares (m)")
+    s39s.add_argument("--bip39-file", help="file with a BIP-39 recovery phrase")
+    s39s.add_argument("--hex", help="master secret as hex (16/20/24/28/32 bytes)")
+    s39s.add_argument("--secret-file", help="raw master-secret file (16/20/24/28/32 bytes)")
+    s39s.add_argument("--labels", help="comma-separated labels")
+    s39s.add_argument("-o", "--out-dir", default="slip39-shares", dest="out_dir", help="output directory")
+    _add_passphrase_opts(s39s)
+    s39s.set_defaults(func=_cmd_slip39_split)
+
+    s39c = s39sub.add_parser("combine", help="reconstruct a secret from SLIP-39 shares")
+    s39c.add_argument("shares", nargs="+", help="SLIP-39 share files (>= threshold)")
+    s39c.add_argument("-o", "--output", default="-", help="output file, or - for stdout")
+    s39c.add_argument("--bip39", action="store_true", help="output as a BIP-39 phrase")
+    s39c.add_argument("--hex", action="store_true", help="output as hex")
+    _add_passphrase_opts(s39c)
+    s39c.set_defaults(func=_cmd_slip39_combine)
+
+    wiz = sub.add_parser("wizard", help="interactive guided mode (also runs with no arguments)")
+    wiz.set_defaults(func=_cmd_wizard)
 
     return parser
 
 
+def _cmd_wizard(args) -> None:
+    from .wizard import run_wizard
+
+    run_wizard()
+
+
 def main(argv: list[str] | None = None) -> None:
+    argv = sys.argv[1:] if argv is None else argv
+    if not argv:  # no arguments -> friendly guided mode
+        from .wizard import run_wizard
+
+        run_wizard()
+        return
     args = build_parser().parse_args(argv)
     args.func(args)
 

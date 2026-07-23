@@ -85,8 +85,11 @@ def _derive(passphrase: bytes, salt: bytes, n_log2: int, r: int, p: int) -> byte
 def protect(secret: bytes, threshold: int, shares: int) -> list[str]:
     """Encrypt ``secret`` and split the key into ``shares`` shards (``threshold``
     of which reconstruct it). Returns a list of base64 shard strings."""
-    if not (1 <= threshold <= shares <= 255):
-        raise ValueError("require 1 <= threshold <= shares <= 255")
+    if not (2 <= threshold <= shares <= 255):
+        raise ValueError(
+            "require 2 <= threshold <= shares <= 255 "
+            "(a single share must never reconstruct the secret)"
+        )
     key = get_random_bytes(32)
     nonce, tag, ct = _aead_encrypt(key, secret)
     out = []
