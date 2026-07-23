@@ -343,10 +343,25 @@ def build_parser() -> argparse.ArgumentParser:
     _add_passphrase_opts(s39c)
     s39c.set_defaults(func=_cmd_slip39_combine)
 
+    wiz = sub.add_parser("wizard", help="interactive guided mode (also runs with no arguments)")
+    wiz.set_defaults(func=_cmd_wizard)
+
     return parser
 
 
+def _cmd_wizard(args) -> None:
+    from .wizard import run_wizard
+
+    run_wizard()
+
+
 def main(argv: list[str] | None = None) -> None:
+    argv = sys.argv[1:] if argv is None else argv
+    if not argv:  # no arguments -> friendly guided mode
+        from .wizard import run_wizard
+
+        run_wizard()
+        return
     args = build_parser().parse_args(argv)
     args.func(args)
 

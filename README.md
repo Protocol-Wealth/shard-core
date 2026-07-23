@@ -14,15 +14,27 @@ What Shamir does **not** give you is **integrity**: it can't tell a corrupted or
 
 Cryptography is delegated to the well-reviewed [`pycryptodome`](https://pypi.org/project/pycryptodome/) library — this project only composes it. No hand-rolled crypto.
 
-## Install
+## Install (WSL / macOS / Linux)
+
+One command from a clone — installs the `shard-core` command with SLIP-39 support:
 
 ```bash
-pip install .            # from a clone
-# or run without installing:
-PYTHONPATH=src python3 -m shard_core --help
+git clone https://github.com/Protocol-Wealth/shard-core.git
+cd shard-core
+./install.sh
 ```
 
-Requires Python 3.9+ and `pycryptodome`.
+Then just run it:
+
+```bash
+shard-core            # guided, interactive mode — no flags to remember
+```
+
+Prefer to do it by hand? `pipx install '.[slip39]'` (or `pip install '.[slip39]'`), or run without installing via `PYTHONPATH=src python3 -m shard_core --help`. Requires Python 3.9+.
+
+## Guided mode
+
+Running `shard-core` with **no arguments** (or `shard-core wizard`) starts an interactive wizard that walks you through the common tasks with plain prompts — split a recovery phrase into shares (e.g. one each for you, Adam, Jason, and Coincover), recover it, and encrypt/decrypt a file. Ideal to hand to someone who doesn't use the command line. Everything below is the underlying flag-driven interface.
 
 ## Commands
 
