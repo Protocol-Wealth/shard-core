@@ -1,3 +1,14 @@
+# === shard-core: NEVER commit secrets, shards, ciphertext, or phrases ===
+*.shard
+share-*.txt
+/shards/
+/fordefi-shards/
+/secrets/
+*.enc
+phrase*.txt
+secret*.txt
+*.key
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

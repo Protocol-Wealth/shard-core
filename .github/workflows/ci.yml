@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: test (py ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install pycryptodome
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+        env:
+          PYTHONPATH: src
+
+  package:
+    name: build + smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package
+        run: pip install .
+      - name: Smoke (protect -> recover)
+        run: |
+          set -e
+          shard-core --version
+          printf 'test-secret-value' > /tmp/s.txt
+          shard-core protect -t 2 -n 3 -i /tmp/s.txt -o /tmp/shards
+          shard-core recover -o /tmp/r.txt /tmp/shards/share-01.txt /tmp/shards/share-03.txt
+          diff /tmp/s.txt /tmp/r.txt
+          echo "smoke OK"
