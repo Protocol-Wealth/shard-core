@@ -165,6 +165,24 @@ def encrypt(
     return base64.b64encode(header + ct).decode("ascii")
 
 
+def normalize_labels(labels, count: int) -> list[str]:
+    """Return exactly ``count`` share labels, robustly (never fails):
+
+    - no labels        -> numbered ``01``..``0N``
+    - a single label   -> ``label-1``..``label-N``
+    - fewer than count -> keep the given ones, pad the rest with numbers
+    - more than count  -> truncate to ``count``
+    """
+    cleaned = [str(x).strip() for x in (labels or []) if str(x).strip()]
+    if not cleaned:
+        return [f"{i:02d}" for i in range(1, count + 1)]
+    if len(cleaned) == 1 and count > 1:
+        return [f"{cleaned[0]}-{i}" for i in range(1, count + 1)]
+    if len(cleaned) >= count:
+        return cleaned[:count]
+    return cleaned + [f"{i:02d}" for i in range(len(cleaned) + 1, count + 1)]
+
+
 def decrypt(blob_b64: str, passphrase: bytes) -> bytes:
     blob = base64.b64decode(blob_b64)
     if blob[:4] != MAGIC_ENCRYPT:

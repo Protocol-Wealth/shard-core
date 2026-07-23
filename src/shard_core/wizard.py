@@ -100,18 +100,22 @@ def _wizard_split() -> None:
         print("Empty secret — nothing to do.")
         return
     n = _ask_int("How many shares in total", 5)
-    t = _ask_int("How many shares needed to unlock (threshold; at least 2, 3+ recommended)", 3)
-    if t < 2:
-        print("  Threshold must be at least 2 (a single share must never unlock the secret).")
+    if n < 2:
+        print("  You need at least 2 shares.")
         return
-    if t > n:
-        print("  Threshold cannot exceed the total number of shares.")
-        return
+    if n == 2:
+        t = 2
+        print("With 2 shares, BOTH are required to unlock (2-of-2).")
+    else:
+        t = _ask_int(f"How many shares needed to unlock (2 to {n})", 2)
+        if t < 2:
+            print("  Threshold must be at least 2 (a single share must never unlock the secret).")
+            return
+        if t > n:
+            print("  Threshold cannot exceed the total number of shares.")
+            return
     raw = _ask("Optional labels (comma-separated), or press Enter for numbers", "")
-    labels = [x.strip() for x in raw.split(",")] if raw else [f"{i:02d}" for i in range(1, n + 1)]
-    if len(labels) != n:
-        print(f"  {len(labels)} labels for {n} shares — adjust and retry.")
-        return
+    labels = core.normalize_labels(raw.split(",") if raw else [], n)
     out = _ask("Output folder", "shares")
 
     use_slip39 = False

@@ -95,8 +95,7 @@ def _cmd_decrypt(args) -> None:
 
 
 def _do_protect(secret: bytes, threshold: int, shares: int, out_dir: str, labels: list[str], mode: str) -> None:
-    if len(labels) != shares:
-        sys.exit(f"error: {len(labels)} label(s) for {shares} shares")
+    labels = core.normalize_labels(labels, shares)
     shard_b64 = core.protect(secret, threshold, shares)
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     written = []
@@ -206,8 +205,7 @@ def _write_mnemonic_share(out_dir, label, mnemonic, mode, k, n, i, source) -> st
 
 
 def _do_slip39_split(mnemonics, out_dir, labels, mode, k, n, source) -> None:
-    if len(labels) != n:
-        sys.exit(f"error: {len(labels)} label(s) for {n} shares")
+    labels = core.normalize_labels(labels, n)
     written = [
         _write_mnemonic_share(out_dir, label, mn, mode, k, n, i, source)
         for i, (mn, label) in enumerate(zip(mnemonics, labels), start=1)
