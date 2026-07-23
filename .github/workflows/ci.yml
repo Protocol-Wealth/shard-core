@@ -17,8 +17,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install pycryptodome
-      - name: Unit tests
+      - run: pip install pycryptodome shamir-mnemonic mnemonic
+      - name: Unit tests (incl. SLIP-39)
         run: python -m unittest discover -s tests -v
         env:
           PYTHONPATH: src
@@ -41,4 +41,13 @@ jobs:
           shard-core protect -t 2 -n 3 -i /tmp/s.txt -o /tmp/shards
           shard-core recover -o /tmp/r.txt /tmp/shards/share-01.txt /tmp/shards/share-03.txt
           diff /tmp/s.txt /tmp/r.txt
-          echo "smoke OK"
+          echo "base smoke OK"
+      - name: Install slip39 extra
+        run: pip install '.[slip39]'
+      - name: Smoke (SLIP-39 split -> combine)
+        run: |
+          set -e
+          shard-core slip39 split -t 2 -n 3 --hex 000102030405060708090a0b0c0d0e0f -o /tmp/s39
+          OUT=$(shard-core slip39 combine --hex /tmp/s39/share-01.txt /tmp/s39/share-03.txt)
+          test "$OUT" = "000102030405060708090a0b0c0d0e0f"
+          echo "slip39 smoke OK"

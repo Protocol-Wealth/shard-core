@@ -32,6 +32,7 @@ Requires Python 3.9+ and `pycryptodome`.
 | `protect` / `recover` | Encrypt, then Shamir-split the key into `n` shards (`k` reconstruct) |
 | `info` | Show a shard's header (threshold/index) without reconstructing |
 | `fordefi split` / `fordefi combine` | Guided flow for a Fordefi recovery phrase |
+| `slip39 split` / `slip39 combine` | SLIP-39 word-list shares (needs the `slip39` extra) |
 
 ## Quickstart
 
@@ -80,9 +81,36 @@ shard-core fordefi combine -o phrase.txt \
   fordefi-shards/share-coincover.txt fordefi-shards/share-offline.txt
 ```
 
+### SLIP-39 word-list shares
+
+For human-readable, checksummed shares that interoperate with any SLIP-39 tool or hardware wallet, use SLIP-39. Install the extra (Trezor reference libraries):
+
+```bash
+pip install 'shard-core[slip39]'
+```
+
+Split a 16/32-byte secret or a BIP-39 recovery phrase into SLIP-39 word shares:
+
+```bash
+shard-core slip39 split -t 2 -n 3 --bip39-file phrase.txt -o slip39-shares/
+#   each share is a checksummed word list, e.g.:
+#   spirit thorn academic acid coding slavery hormone famous museum zero ...
+
+shard-core slip39 combine --bip39 slip39-shares/share-01.txt slip39-shares/share-03.txt
+```
+
+Or drive it straight from the Fordefi flow:
+
+```bash
+shard-core fordefi split   -t 2 -n 3 --phrase-file phrase.txt --slip39 -o fordefi-shards/
+shard-core fordefi combine --slip39 fordefi-shards/share-coincover.txt fordefi-shards/share-offline.txt
+```
+
+**When to use which:** SLIP-39 (`slip39` / `--slip39`) is best for *seeds* — word lists you can write on steel or type into a hardware wallet, and it needs a 16/20/24/28/32-byte secret or a valid BIP-39 phrase. For an **arbitrary-length** secret (or non-BIP-39 data), use `protect` (AEAD + Shamir, base64 shards). Both give n-of-m recovery; SLIP-39 trades generality for interoperability and readable shares. An optional SLIP-39 passphrase is supported via `--passphrase-env` / `--passphrase-file`.
+
 ## Format
 
-Each shard is a text file: a `#` comment line plus one base64 line. The base64 decodes to `magic("SHRD") | version | threshold | total | index | nonce | tag | key_share_a | key_share_b | ct_len | ciphertext`. All shards from one `protect` carry the same ciphertext; only the key-share and index differ.
+Each `protect` shard is a text file: a `#` comment line plus one base64 line. The base64 decodes to `magic("SHRD") | version | threshold | total | index | nonce | tag | key_share_a | key_share_b | ct_len | ciphertext`. All shards from one `protect` carry the same ciphertext; only the key-share and index differ.
 
 ## Security notes
 

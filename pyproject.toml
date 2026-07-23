@@ -18,6 +18,10 @@ classifiers = [
 ]
 dependencies = ["pycryptodome>=3.20"]
 
+[project.optional-dependencies]
+# SLIP-39 word-list shares (Trezor reference libs). Install: pip install 'shard-core[slip39]'
+slip39 = ["shamir-mnemonic>=0.3.0", "mnemonic>=0.20"]
+
 [project.urls]
 Homepage = "https://github.com/Protocol-Wealth/shard-core"
 
