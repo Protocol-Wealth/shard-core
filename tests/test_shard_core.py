@@ -43,9 +43,10 @@ class TestProtectRecover(unittest.TestCase):
         shards = core.protect(secret, threshold=3, shares=5)
         self.assertEqual(core.recover([shards[4], shards[1], shards[0]]), secret)
 
-    def test_1_of_1(self):
-        shards = core.protect(b"solo", threshold=1, shares=1)
-        self.assertEqual(core.recover(shards), b"solo")
+    def test_threshold_min_2(self):
+        # a single share must never reconstruct the secret
+        with self.assertRaises(ValueError):
+            core.protect(b"solo", threshold=1, shares=3)
 
     def test_tampered_shard_detected(self):
         import base64

@@ -49,6 +49,10 @@ def split_master_secret(
     secret: bytes, threshold: int, shares: int, passphrase: bytes = b""
 ) -> list[str]:
     """Split a 16/20/24/28/32-byte master secret into SLIP-39 word shares."""
+    if not (2 <= threshold <= shares):
+        raise ValueError(
+            "require 2 <= threshold <= shares (a single share must never reconstruct)"
+        )
     if len(secret) not in VALID_LENGTHS:
         raise ValueError(
             f"SLIP-39 master secret must be one of {VALID_LENGTHS} bytes, got {len(secret)}"

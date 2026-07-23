@@ -91,15 +91,24 @@ def _read_secret() -> bytes:
 
 
 def _wizard_split() -> None:
+    print("\nThis splits your secret into shares:")
+    print("  - Each share ALONE reveals nothing.")
+    print("  - The secret stays encrypted until enough shares are combined.")
+    print("  - You choose the threshold: how many shares are needed to unlock it.\n")
     secret = _read_secret()
     if not secret:
         print("Empty secret — nothing to do.")
         return
-    n = _ask_int("How many shares total (e.g. 4 = you + Adam + Jason + Coincover)", 4)
-    t = _ask_int("How many needed to recover (threshold, e.g. 2 or 3)", 2)
-    suggested = (["nick", "adam", "jason", "coincover"] + [f"s{i}" for i in range(5, 65)])[:n]
-    labels = _ask("Labels for each share (comma-separated)", ",".join(suggested)).split(",")
-    labels = [x.strip() for x in labels]
+    n = _ask_int("How many shares in total", 5)
+    t = _ask_int("How many shares needed to unlock (threshold; at least 2, 3+ recommended)", 3)
+    if t < 2:
+        print("  Threshold must be at least 2 (a single share must never unlock the secret).")
+        return
+    if t > n:
+        print("  Threshold cannot exceed the total number of shares.")
+        return
+    raw = _ask("Optional labels (comma-separated), or press Enter for numbers", "")
+    labels = [x.strip() for x in raw.split(",")] if raw else [f"{i:02d}" for i in range(1, n + 1)]
     if len(labels) != n:
         print(f"  {len(labels)} labels for {n} shares — adjust and retry.")
         return
@@ -132,13 +141,13 @@ def _wizard_split() -> None:
         _write_600(path, (comment + body + "\n").encode())
         written.append(path)
 
-    print(f"\nWrote {n} shares (any {t} reconstruct):")
+    print(f"\nWrote {n} shares. Any {t} together rebuild the secret; fewer than {t} reveal nothing.")
     for p in written:
         print(f"  {p}")
     print("\nNext steps:")
-    print("  - Give one share to each holder; store them in separate places.")
-    print("  - Coincover just stores its share and cannot use it alone.")
-    print("  - To recover later, run the wizard again and choose 'Recover'.")
+    print("  - Give ONE share to each holder; store them in separate places.")
+    print("  - A holder who only stores a share cannot unlock anything alone.")
+    print("  - To rebuild later, run this wizard again and choose 'Recover'.")
 
 
 def _wizard_recover() -> None:

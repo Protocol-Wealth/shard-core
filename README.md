@@ -34,7 +34,17 @@ Prefer to do it by hand? `pipx install '.[slip39]'` (or `pip install '.[slip39]'
 
 ## Guided mode
 
-Running `shard-core` with **no arguments** (or `shard-core wizard`) starts an interactive wizard that walks you through the common tasks with plain prompts — split a recovery phrase into shares (e.g. one each for you, Adam, Jason, and Coincover), recover it, and encrypt/decrypt a file. Ideal to hand to someone who doesn't use the command line. Everything below is the underlying flag-driven interface.
+Running `shard-core` with **no arguments** (or `shard-core wizard`) starts an interactive wizard that walks you through the common tasks with plain prompts — split a recovery phrase into shares (one per holder), recover it, and encrypt/decrypt a file. Ideal to hand to someone who doesn't use the command line. Everything below is the underlying flag-driven interface.
+
+## How it works: shares vs. the secret
+
+`shard-core` never hands anyone the secret directly. It produces **shares**:
+
+- **Each share on its own reveals nothing** — it is useless in isolation.
+- The secret stays **encrypted / wrapped**; it is only rebuilt (decrypted) when at least the **threshold** number of shares are brought back together.
+- You choose the threshold: **3-of-5** means any 3 of the 5 shares reconstruct the secret, and any 2 reveal nothing.
+
+So you can give one share to each holder (and one to a storage-only custodian), and no single holder — or custodian — can ever unlock the secret alone. The threshold must be **at least 2**; **3 or more is recommended**.
 
 ## Commands
 
@@ -79,18 +89,18 @@ shard-core decrypt -i secret.enc -o secret.txt
 
 ### Fordefi recovery-phrase mode
 
-Shard a Fordefi dedicated-admin recovery phrase into labeled shards:
+Split a Fordefi recovery phrase into shares (numbered by default):
 
 ```bash
-shard-core fordefi split -t 2 -n 3 --phrase-file phrase.txt -o fordefi-shards/
-#   -> share-coincover.txt  share-bitwarden.txt  share-offline.txt
+shard-core fordefi split -t 3 -n 5 --phrase-file phrase.txt -o fordefi-shards/
+#   -> share-01.txt  share-02.txt  ...  share-05.txt   (any 3 rebuild the phrase)
 ```
 
-Distribute one shard per location. Recover later (offline), then feed the phrase to Fordefi's recovery-tool:
+Give one share to each holder. Recover later (offline), then feed the phrase to Fordefi's recovery-tool:
 
 ```bash
 shard-core fordefi combine -o phrase.txt \
-  fordefi-shards/share-coincover.txt fordefi-shards/share-offline.txt
+  fordefi-shards/share-01.txt fordefi-shards/share-02.txt fordefi-shards/share-03.txt
 ```
 
 ### SLIP-39 word-list shares
@@ -114,8 +124,8 @@ shard-core slip39 combine --bip39 slip39-shares/share-01.txt slip39-shares/share
 Or drive it straight from the Fordefi flow:
 
 ```bash
-shard-core fordefi split   -t 2 -n 3 --phrase-file phrase.txt --slip39 -o fordefi-shards/
-shard-core fordefi combine --slip39 fordefi-shards/share-coincover.txt fordefi-shards/share-offline.txt
+shard-core fordefi split   -t 3 -n 5 --phrase-file phrase.txt --slip39 -o fordefi-shards/
+shard-core fordefi combine --slip39 fordefi-shards/share-01.txt fordefi-shards/share-02.txt fordefi-shards/share-03.txt
 ```
 
 **When to use which:** SLIP-39 (`slip39` / `--slip39`) is best for *seeds* — word lists you can write on steel or type into a hardware wallet, and it needs a 16/20/24/28/32-byte secret or a valid BIP-39 phrase. For an **arbitrary-length** secret (or non-BIP-39 data), use `protect` (AEAD + Shamir, base64 shards). Both give n-of-m recovery; SLIP-39 trades generality for interoperability and readable shares. An optional SLIP-39 passphrase is supported via `--passphrase-env` / `--passphrase-file`.
@@ -131,7 +141,7 @@ Each `protect` shard is a text file: a `#` comment line plus one base64 line. Th
 - **Passphrase KDF** is scrypt (default cost `N = 2**17`).
 - Recovered secrets are written `0600`; passphrases are read via prompt / env / file, never a CLI argument.
 - Python cannot reliably zero secrets in memory — treat the host as trusted for the duration of an operation.
-- Keep **fewer than the threshold** number of shards in any single place. A shard is safe to store with a storage-only custodian (e.g. Coincover) because it cannot decrypt below threshold.
+- Keep **fewer than the threshold** number of shares in any single place. A share is safe to hand to a storage-only custodian because it cannot decrypt below the threshold.
 
 ## Related / alternatives
 

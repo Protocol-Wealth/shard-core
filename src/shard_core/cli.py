@@ -17,8 +17,6 @@ from pathlib import Path
 
 from . import __version__, core, slip39
 
-DEFAULT_FORDEFI_LABELS = "coincover,bitwarden,offline"
-
 
 # --------------------------------------------------------------------------- #
 # I/O helpers
@@ -145,7 +143,7 @@ def _cmd_fordefi_split(args) -> None:
     phrase = phrase.rstrip(b"\r\n")
     if not phrase:
         sys.exit("error: empty recovery phrase")
-    labels = args.labels.split(",")
+    labels = args.labels.split(",") if args.labels else [f"{i:02d}" for i in range(1, args.shares + 1)]
     if args.slip39:
         try:
             mnemonics = slip39.split_bip39(phrase.decode(), args.threshold, args.shares)
@@ -155,9 +153,10 @@ def _cmd_fordefi_split(args) -> None:
         _do_slip39_split(mnemonics, args.out_dir, labels, "fordefi", args.threshold, args.shares, "bip39")
     else:
         _do_protect(phrase, args.threshold, args.shares, args.out_dir, labels, "fordefi")
-    print("\nFordefi: distribute one shard per location (e.g. coincover / bitwarden / offline).")
-    print("Coincover is storage-only and cannot decrypt a shard; the threshold stays with you.")
-    print("To recover the phrase later: `shard-core fordefi combine ...` (offline), then feed it")
+    print("\nGive one share to each holder; store them in separate places.")
+    print(f"Any {args.threshold} shares together rebuild the phrase; fewer reveal nothing.")
+    print("A holder that only stores a share cannot rebuild anything alone.")
+    print("To recover later, run `shard-core fordefi combine ...` offline, then feed the phrase")
     print("to Fordefi's recovery-tool. Do this only on an airgapped machine.")
 
 
@@ -309,7 +308,7 @@ def build_parser() -> argparse.ArgumentParser:
     fds.add_argument("-t", "--threshold", type=int, default=2, help="shards needed (default 2)")
     fds.add_argument("-n", "--shares", type=int, default=3, help="total shards (default 3)")
     fds.add_argument("--phrase-file", help="file with the phrase (else prompt)")
-    fds.add_argument("--labels", default=DEFAULT_FORDEFI_LABELS, help="comma-separated labels")
+    fds.add_argument("--labels", help="comma-separated labels (default: numbered 01..0n)")
     fds.add_argument("-o", "--out-dir", default="fordefi-shards", dest="out_dir", help="output directory")
     fds.add_argument("--slip39", action="store_true",
                      help="emit SLIP-39 word-list shares (phrase must be valid BIP-39)")
