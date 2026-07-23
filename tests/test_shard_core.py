@@ -70,6 +70,18 @@ class TestProtectRecover(unittest.TestCase):
             core.protect(b"x", threshold=4, shares=3)
 
 
+class TestNormalizeLabels(unittest.TestCase):
+    def test_cases(self):
+        nl = core.normalize_labels
+        self.assertEqual(nl([], 3), ["01", "02", "03"])
+        self.assertEqual(nl(["shard"], 2), ["shard-1", "shard-2"])  # the reported case
+        self.assertEqual(nl(["a", "b"], 2), ["a", "b"])
+        self.assertEqual(nl(["a"], 1), ["a"])
+        self.assertEqual(nl(["a", "b"], 4), ["a", "b", "03", "04"])
+        self.assertEqual(nl(["a", "b", "c"], 2), ["a", "b"])
+        self.assertEqual(nl([" x ", "", "y"], 3), ["x", "y", "03"])
+
+
 @unittest.skipUnless(slip39.available(), "slip39 extra not installed")
 class TestSlip39(unittest.TestCase):
     def test_master_secret_2_of_3(self):
