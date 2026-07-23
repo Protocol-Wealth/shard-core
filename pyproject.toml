@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shard-core"
+version = "0.1.0"
+description = "Local, offline encryption + Shamir n-of-m secret sharing. No network, ever."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Protocol Wealth LLC" }]
+license = { text = "Apache-2.0 OR MIT-0" }
+keywords = ["shamir", "secret-sharing", "encryption", "aead", "backup", "seed-phrase"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Topic :: Security :: Cryptography",
+  "Environment :: Console",
+]
+dependencies = ["pycryptodome>=3.20"]
+
+[project.urls]
+Homepage = "https://github.com/Protocol-Wealth/shard-core"
+
+[project.scripts]
+shard-core = "shard_core.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
