@@ -1,7 +1,9 @@
 """Runs with stdlib unittest (no pytest needed): python -m unittest discover -s tests"""
 
 import base64
+import itertools
 import os
+import random
 import struct
 import subprocess
 import sys
@@ -121,6 +123,56 @@ class TestProtectRecover(unittest.TestCase):
     def test_bad_params(self):
         with self.assertRaises(ValueError):
             core.protect(b"x", threshold=4, shares=3)
+
+    def test_every_subset_reconstructs(self):
+        """Random secrets, every k-of-n shape, k-subsets sampled per run."""
+        for k, n in [(2, 2), (2, 3), (3, 5), (5, 5)]:
+            for _ in range(5):
+                secret = os.urandom(random.randint(1, 200))
+                shards = core.protect(secret, threshold=k, shares=n)
+                subsets = list(itertools.combinations(range(n), k))
+                for combo in random.sample(subsets, min(6, len(subsets))):
+                    with self.subTest(k=k, n=n, combo=combo, size=len(secret)):
+                        self.assertEqual(core.recover([shards[i] for i in combo]), secret)
+
+
+class TestRecoverConsistency(unittest.TestCase):
+    """Shards from different protect runs must be named, not merely rejected."""
+
+    def test_mixed_runs_rejected(self):
+        a = core.protect(b"first run", threshold=2, shares=3)
+        b = core.protect(b"second run", threshold=2, shares=3)
+        with self.assertRaises(ValueError) as cm:
+            core.recover([a[0], b[1]])
+        msg = str(cm.exception)
+        self.assertIn("different protect runs", msg)
+        self.assertIn("shard 2 (index=2)", msg)
+
+    def test_mixed_parameters_rejected(self):
+        a = core.protect(b"x", threshold=2, shares=3)
+        b = core.protect(b"y", threshold=3, shares=5)
+        with self.assertRaises(ValueError) as cm:
+            core.recover([a[0], b[1]])
+        self.assertIn("differing threshold", str(cm.exception))
+
+    def test_duplicate_shards_below_threshold_are_named(self):
+        shards = core.protect(b"dupes", threshold=3, shares=5)
+        with self.assertRaises(ValueError) as cm:
+            core.recover([shards[0], shards[0], shards[1]])
+        msg = str(cm.exception)
+        self.assertIn("duplicate", msg)
+        self.assertIn("need >= 3 distinct shards, got 2", msg)
+
+    def test_duplicates_tolerated_when_enough_distinct(self):
+        secret = b"dupes are fine above threshold"
+        shards = core.protect(secret, threshold=3, shares=5)
+        supplied = [shards[0], shards[0], shards[1], shards[2]]
+        self.assertEqual(core.recover(supplied), secret)
+
+    def test_no_shards(self):
+        with self.assertRaises(ValueError) as cm:
+            core.recover([])
+        self.assertIn("no shards provided", str(cm.exception))
 
 
 class TestMalformedShards(unittest.TestCase):
@@ -291,6 +343,57 @@ class TestNormalizeLabels(unittest.TestCase):
         self.assertEqual(nl(["a", "b"], 4), ["a", "b", "03", "04"])
         self.assertEqual(nl(["a", "b", "c"], 2), ["a", "b"])
         self.assertEqual(nl([" x ", "", "y"], 3), ["x", "y", "03"])
+
+    def test_path_traversal_is_neutralized(self):
+        # Labels become `share-<label>.txt`; nothing may steer that write.
+        label = core.normalize_labels(["../../tmp/evil"], 1)[0]
+        self.assertNotIn("/", label)
+        self.assertNotIn("\\", label)
+        self.assertNotIn("..", label)
+        self.assertFalse(label.startswith("."))
+
+    def test_unsafe_characters_become_underscores(self):
+        nl = core.normalize_labels
+        self.assertEqual(nl(["a b"], 1), ["a_b"])
+        self.assertEqual(nl(["a\nb"], 1), ["a_b"])
+        self.assertEqual(nl(["a;rm -rf /"], 1), ["a_rm_-rf__"])
+
+    def test_label_with_nothing_safe_left_falls_back_to_number(self):
+        nl = core.normalize_labels
+        self.assertEqual(nl(["..."], 1), ["01"])
+        self.assertEqual(nl(["..."], 3), ["01", "02", "03"])
+        self.assertEqual(nl(["ok", "..", "fine"], 3), ["ok", "02", "fine"])
+
+    def test_derived_labels_are_sanitized_too(self):
+        self.assertEqual(core.normalize_labels(["../x"], 2), ["_x-1", "_x-2"])
+
+    def test_safe_labels_survive_unchanged(self):
+        nl = core.normalize_labels
+        self.assertEqual(nl(["alice", "bob"], 2), ["alice", "bob"])
+        self.assertEqual(nl(["vault.1", "backup-01"], 2), ["vault.1", "backup-01"])
+
+    def test_long_labels_are_capped(self):
+        self.assertEqual(len(core.normalize_labels(["x" * 200], 1)[0]), core.MAX_LABEL_LEN)
+
+
+class TestLabelsReachTheFilesystemSafely(unittest.TestCase):
+    def test_protect_writes_only_inside_out_dir(self):
+        import contextlib
+        import io
+        import tempfile
+
+        from shard_core import cli
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = os.path.join(tmp, "shards")
+            canary = os.path.join(tmp, "evil")
+            with contextlib.redirect_stdout(io.StringIO()):
+                cli._do_protect(b"secret", 2, 2, out_dir, ["../evil", "ok"], "protect")
+            self.assertFalse(os.path.exists(canary), "label escaped the out-dir")
+            written = sorted(os.listdir(out_dir))
+            self.assertEqual(len(written), 2)
+            for name in written:
+                self.assertTrue(name.startswith("share-") and name.endswith(".txt"))
 
 
 @unittest.skipUnless(slip39.available(), "slip39 extra not installed")

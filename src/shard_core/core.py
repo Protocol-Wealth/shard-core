@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import base64
 import binascii
+import re
 import struct
+from collections import Counter
 
 from Crypto.Cipher import ChaCha20_Poly1305
 from Crypto.Protocol.KDF import scrypt
@@ -193,19 +195,43 @@ def parse_shard(shard_b64: str) -> dict:
     }
 
 
+# Fields every shard of one protect run must agree on. The index is the only
+# thing that legitimately varies.
+_SHARED_FIELDS = ("version", "threshold", "shares", "nonce", "tag", "ciphertext")
+
+
 def recover(shard_b64_list: list[str]) -> bytes:
-    """Reconstruct the secret from >= threshold shards."""
-    parsed = [parse_shard(s) for s in shard_b64_list]
-    if not parsed:
+    """Reconstruct the secret from >= threshold shards.
+
+    All shards must come from the same ``protect`` run. Mixing runs is checked
+    up front and reported precisely, rather than surfacing later as an opaque
+    MAC failure that reads like corruption.
+    """
+    if not shard_b64_list:
         raise ValueError("no shards provided")
-    threshold = parsed[0]["threshold"]
+    parsed = [parse_shard(s) for s in shard_b64_list]
+    ref = parsed[0]
+    for position, p in enumerate(parsed[1:], start=2):
+        for field in _SHARED_FIELDS:
+            if p[field] != ref[field]:
+                raise ValueError(
+                    f"shard {position} (index={p['index']}) does not match shard 1: "
+                    f"differing {field} — shards are from different protect runs"
+                )
+    threshold = ref["threshold"]
     # Deduplicate by share index; all shards carry the same ciphertext.
     by_index: dict[int, dict] = {}
     for p in parsed:
         by_index[p["index"]] = p
     if len(by_index) < threshold:
+        counts = Counter(p["index"] for p in parsed)
+        duplicates = sorted(p["index"] for p in parsed if counts[p["index"]] > 1)
+        detail = (
+            f" (duplicate indices supplied: {', '.join(str(i) for i in duplicates)})"
+            if duplicates else ""
+        )
         raise ValueError(
-            f"need >= {threshold} distinct shards, got {len(by_index)}"
+            f"need >= {threshold} distinct shards, got {len(by_index)}{detail}"
         )
     chosen = list(by_index.values())[:threshold]
     key = _combine_key([(p["index"], p["share_a"], p["share_b"]) for p in chosen])
@@ -245,19 +271,41 @@ def encrypt(
     return base64.b64encode(header + ct).decode("ascii")
 
 
+_LABEL_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
+MAX_LABEL_LEN = 64
+
+
+def _sanitize_label(raw: str) -> str:
+    """Reduce a label to one safe filename component (may return ``""``).
+
+    Labels reach the filesystem as ``share-<label>.txt``, so a label must not
+    be able to steer the write anywhere: path separators and every other
+    unexpected character become ``_``, and ``..`` is collapsed so no traversal
+    survives anywhere in the name.
+    """
+    safe = _LABEL_UNSAFE.sub("_", raw)
+    while ".." in safe:
+        safe = safe.replace("..", ".")
+    return safe.lstrip(".-")[:MAX_LABEL_LEN]
+
+
 def normalize_labels(labels, count: int) -> list[str]:
-    """Return exactly ``count`` share labels, robustly (never fails):
+    """Return exactly ``count`` safe share labels, robustly (never fails):
 
     - no labels        -> numbered ``01``..``0N``
     - a single label   -> ``label-1``..``label-N``
     - fewer than count -> keep the given ones, pad the rest with numbers
     - more than count  -> truncate to ``count``
+
+    Every label is sanitized first, so derived labels (``label-1``) are clean
+    too. A label with nothing safe left in it falls back to its number.
     """
-    cleaned = [str(x).strip() for x in (labels or []) if str(x).strip()]
-    if not cleaned:
+    cleaned = [_sanitize_label(str(x).strip()) for x in (labels or []) if str(x).strip()]
+    if not any(cleaned):
         return [f"{i:02d}" for i in range(1, count + 1)]
     if len(cleaned) == 1 and count > 1:
         return [f"{cleaned[0]}-{i}" for i in range(1, count + 1)]
+    cleaned = [c or f"{i:02d}" for i, c in enumerate(cleaned, start=1)]
     if len(cleaned) >= count:
         return cleaned[:count]
     return cleaned + [f"{i:02d}" for i in range(len(cleaned) + 1, count + 1)]

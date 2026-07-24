@@ -145,6 +145,7 @@ Format v1 shards and blobs remain readable — they are recognised by the versio
 - **Format v2 authenticates the shard header** as AEAD associated data, so an edited threshold/share count fails the MAC instead of producing a misleading error. v1 shards remain readable, but their headers are *unauthenticated* — re-shard (`protect` again) to upgrade.
 - **Passphrase KDF** is scrypt (default cost `N = 2**17`).
 - Recovered secrets are written `0600`; passphrases are read via prompt / env / file, never a CLI argument.
+- **`--passphrase-env` is the weakest of the three.** An env var is readable via `/proc/PID/environ` by any process running as the same user, is inherited by child processes, and the command that set it often persists in shell history. Prefer the interactive prompt, or `--passphrase-file` pointing at a ramdisk (`/dev/shm`, `tmpfs`) file you delete afterwards.
 - Python cannot reliably zero secrets in memory — treat the host as trusted for the duration of an operation.
 - Keep **fewer than the threshold** number of shares in any single place. A share is safe to hand to a storage-only custodian because it cannot decrypt below the threshold.
 
