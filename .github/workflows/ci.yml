@@ -1,5 +1,9 @@
 name: CI
 
+# SECURITY REVIEW ITEM: actions/checkout and actions/setup-python still use
+# movable major tags. Replace them with independently verified immutable commit
+# SHAs before the final 0.2.0 release. Trusted SHAs are not available locally.
+
 on:
   push:
     branches: [main]
@@ -11,43 +15,79 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.9", "3.12"]
+        python-version: ["3.9", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install pycryptodome shamir-mnemonic mnemonic
-      - name: Unit tests (incl. SLIP-39)
+      - name: Install declared test dependencies
+        run: python -m pip install '.[test]'
+      - name: Unit tests including SLIP-39
         run: python -m unittest discover -s tests -v
+        env:
+          PYTHONPATH: src
+      - name: Optimized-mode unit tests
+        run: python -O -m unittest discover -s tests -v
         env:
           PYTHONPATH: src
 
   package:
-    name: build + smoke
+    name: build + static + clean smoke
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - name: Install package
-        run: pip install .
+          python-version: "3.14"
+      - name: Install declared development dependencies
+        run: python -m pip install '.[dev]'
+      - name: Focused static checks
+        run: |
+          python -m compileall -q src tests
+          ruff check --select E9,F63,F7,F82 .
+      - name: Build wheel
+        run: python -m build --wheel
+      - name: Install wheel into clean environment
+        run: |
+          python -m venv /tmp/shard-core-wheel-smoke
+          /tmp/shard-core-wheel-smoke/bin/python -m pip install dist/*.whl
       - name: Smoke (protect -> recover)
         run: |
           set -e
-          shard-core --version
+          SHARD_CORE=/tmp/shard-core-wheel-smoke/bin/shard-core
+          "$SHARD_CORE" --version
           printf 'test-secret-value' > /tmp/s.txt
-          shard-core protect -t 2 -n 3 -i /tmp/s.txt -o /tmp/shards
-          shard-core recover -o /tmp/r.txt /tmp/shards/share-01.txt /tmp/shards/share-03.txt
+          "$SHARD_CORE" protect -t 2 -n 3 -i /tmp/s.txt -o /tmp/shards
+          "$SHARD_CORE" recover -o /tmp/r.txt /tmp/shards/share-01.txt /tmp/shards/share-03.txt
           diff /tmp/s.txt /tmp/r.txt
           echo "base smoke OK"
-      - name: Install slip39 extra
-        run: pip install '.[slip39]'
       - name: Smoke (SLIP-39 split -> combine)
         run: |
           set -e
-          shard-core slip39 split -t 2 -n 3 --hex 000102030405060708090a0b0c0d0e0f -o /tmp/s39
-          OUT=$(shard-core slip39 combine --hex /tmp/s39/share-01.txt /tmp/s39/share-03.txt)
+          SHARD_CORE=/tmp/shard-core-wheel-smoke/bin/shard-core
+          /tmp/shard-core-wheel-smoke/bin/python -m pip install 'shard-core[slip39]' --find-links dist
+          "$SHARD_CORE" slip39 split -t 2 -n 3 --hex 000102030405060708090a0b0c0d0e0f -o /tmp/s39
+          OUT=$("$SHARD_CORE" slip39 combine --stdout --hex /tmp/s39/share-01.txt /tmp/s39/share-03.txt)
           test "$OUT" = "000102030405060708090a0b0c0d0e0f"
           echo "slip39 smoke OK"
+
+  offline:
+    name: hash-locked offline install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install bundle build tooling
+        run: python -m pip install '.[dev]'
+      - name: Build Linux x86_64 ceremony bundle
+        run: bash scripts/build-offline-bundle.sh
+      - name: Install using only bundled, hash-locked wheels
+        run: |
+          BUNDLE=$(find dist -maxdepth 1 -type d -name 'shard-core-*-offline-linux-x86_64' -print -quit)
+          PIP_NO_INDEX=1 "$BUNDLE/install-offline.sh" /tmp/shard-core-offline
+          /tmp/shard-core-offline/bin/shard-core --version
+          /tmp/shard-core-offline/bin/python -c \
+            'from shard_core import slip39; assert slip39.available()'

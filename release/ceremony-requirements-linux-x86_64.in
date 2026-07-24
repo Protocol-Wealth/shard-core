@@ -1,0 +1,5 @@
+# Exact reviewed inputs for the Linux x86_64 ceremony wheelhouse.
+# Update deliberately, rebuild the bundle, and independently review all wheels.
+pycryptodome==3.23.0
+shamir-mnemonic==0.3.0
+mnemonic==0.20

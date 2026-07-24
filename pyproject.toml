@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shard-core"
-version = "0.1.0"
+version = "0.2.0rc1"
 description = "Local, offline encryption + Shamir n-of-m secret sharing. No network, ever."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -21,6 +21,15 @@ dependencies = ["pycryptodome>=3.20"]
 [project.optional-dependencies]
 # SLIP-39 word-list shares (Trezor reference libs). Install: pip install 'shard-core[slip39]'
 slip39 = ["shamir-mnemonic>=0.3.0", "mnemonic>=0.20"]
+# Test coverage includes the optional SLIP-39 implementation.
+test = ["shamir-mnemonic>=0.3.0", "mnemonic>=0.20"]
+# Release tooling is intentionally separate from runtime dependencies.
+dev = [
+  "shamir-mnemonic>=0.3.0",
+  "mnemonic>=0.20",
+  "build>=1.2",
+  "ruff>=0.6",
+]
 
 [project.urls]
 Homepage = "https://github.com/Protocol-Wealth/shard-core"

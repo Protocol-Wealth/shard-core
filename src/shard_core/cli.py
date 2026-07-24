@@ -10,12 +10,18 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import base64
 import getpass
 import os
+import secrets
+import stat
 import sys
+from itertools import combinations
 from pathlib import Path
 
-from . import __version__, core, slip39
+from . import __version__, core, fordefi as fordefi_support, manifest, safeio, slip39
+
+MAX_PASSPHRASE_BYTES = 4096
 
 
 # --------------------------------------------------------------------------- #
@@ -27,44 +33,111 @@ def _read_input(path: str | None) -> bytes:
     return Path(path).read_bytes()
 
 
-def _write_secret(path: str | None, data: bytes) -> None:
-    """Write recovered plaintext. To a file it is created 0600 up front."""
-    if path in (None, "-"):
+def _emit_secret(args, data: bytes) -> None:
+    """Emit plaintext only to an explicitly selected destination."""
+    if args.stdout:
+        if getattr(args, "force", False):
+            raise ValueError("--force cannot be used with --stdout")
         sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
         return
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(data)
+
+    if args.output == "-":
+        raise ValueError("use --stdout to write sensitive plaintext to stdout")
+
+    safeio.atomic_write_bytes(
+        args.output,
+        data,
+        force=getattr(args, "force", False),
+    )
 
 
-def _write_text(path: str | None, text: str) -> None:
+def _write_text(path: str | None, text: str, *, force: bool = False) -> None:
     if path in (None, "-"):
         sys.stdout.write(text)
+        sys.stdout.flush()
         return
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(text)
+    safeio.atomic_write_text(path, text, force=force)
+
+
+def _require_nonempty_secret(value: bytes, *, source: str) -> bytes:
+    value = value.rstrip(b"\r\n")
+    if not value:
+        raise ValueError(f"empty passphrase from {source}")
+    if len(value) > MAX_PASSPHRASE_BYTES:
+        raise ValueError(f"passphrase from {source} is too large")
+    return value
+
+
+def _read_passphrase_file(path: str, *, allow_insecure: bool) -> bytes:
+    target = Path(path)
+    if not allow_insecure:
+        metadata = os.lstat(target)
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError(f"refusing symlink passphrase file: {target}")
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f"passphrase file is not regular: {target}")
+        if os.name == "posix" and stat.S_IMODE(metadata.st_mode) & 0o077:
+            raise ValueError(
+                f"passphrase file is group/world accessible: {target}; "
+                "use chmod 600 or --allow-insecure-passphrase-file"
+            )
+
+    value = safeio.read_limited_bytes(
+        target,
+        max_bytes=MAX_PASSPHRASE_BYTES,
+        allow_symlink=allow_insecure,
+    )
+    return _require_nonempty_secret(value, source=f"file {target}")
 
 
 def _get_passphrase(args, confirm: bool) -> bytes:
     if getattr(args, "passphrase_env", None):
         val = os.environ.get(args.passphrase_env)
         if val is None:
-            sys.exit(f"error: env var {args.passphrase_env} is not set")
-        return val.encode()
+            raise ValueError(f"env var {args.passphrase_env} is not set")
+        print(
+            "warning: environment-variable passphrases may be visible "
+            "to same-user processes and child processes",
+            file=sys.stderr,
+        )
+        return _require_nonempty_secret(
+            val.encode(),
+            source=f"environment variable {args.passphrase_env}",
+        )
     if getattr(args, "passphrase_file", None):
-        return Path(args.passphrase_file).read_bytes().rstrip(b"\r\n")
-    pw = getpass.getpass("Passphrase: ")
-    if not pw:
-        sys.exit("error: empty passphrase")
-    if confirm and getpass.getpass("Confirm passphrase: ") != pw:
-        sys.exit("error: passphrases do not match")
-    return pw.encode()
+        return _read_passphrase_file(
+            args.passphrase_file,
+            allow_insecure=getattr(args, "allow_insecure_passphrase_file", False),
+        )
+    pw = _require_nonempty_secret(
+        getpass.getpass("Passphrase: ").encode(),
+        source="interactive prompt",
+    )
+    if confirm:
+        confirmation = _require_nonempty_secret(
+            getpass.getpass("Confirm passphrase: ").encode(),
+            source="confirmation prompt",
+        )
+        if confirmation != pw:
+            raise ValueError("passphrases do not match")
+    return pw
 
 
-def _shard_comment(mode: str, k: int, n: int, i: int, label: str | None) -> str:
+def _shard_comment(
+    mode: str,
+    k: int,
+    n: int,
+    i: int,
+    label: str | None,
+    *,
+    version: int,
+) -> str:
     tag = f" [{label}]" if label else ""
-    return f"# shard-core v1 {mode} {k}-of-{n} share {i}/{n}{tag}\n"
+    return (
+        f"# shard-core SHRD-v{version} "
+        f"{mode} {k}-of-{n} share {i}/{n}{tag}\n"
+    )
 
 
 def _read_shard_file(path: str) -> str:
@@ -82,7 +155,7 @@ def _read_shard_file(path: str) -> str:
 def _cmd_encrypt(args) -> None:
     secret = _read_input(args.input)
     blob = core.encrypt(secret, _get_passphrase(args, confirm=True), n_log2=args.scrypt_n)
-    _write_text(args.output, blob + "\n")
+    _write_text(args.output, blob + "\n", force=args.force)
 
 
 def _cmd_decrypt(args) -> None:
@@ -91,22 +164,81 @@ def _cmd_decrypt(args) -> None:
         secret = core.decrypt(blob, _get_passphrase(args, confirm=False))
     except ValueError:
         sys.exit("error: decryption failed (wrong passphrase or corrupted data)")
-    _write_secret(args.output, secret)
+    _emit_secret(args, secret)
 
 
-def _do_protect(secret: bytes, threshold: int, shares: int, out_dir: str, labels: list[str], mode: str) -> None:
+def _do_protect(
+    secret: bytes,
+    threshold: int,
+    shares: int,
+    out_dir: str,
+    labels: list[str],
+    mode: str,
+    *,
+    force: bool = False,
+    manifest_path: str | None = None,
+) -> None:
     labels = core.normalize_labels(labels, shares)
     shard_b64 = core.protect(secret, threshold, shares)
-    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    verification = core.verify_complete_set(shard_b64)
+    if not verification.ok:
+        raise RuntimeError("internal self-test failed; no files were written")
+    for selected in combinations(range(shares), threshold):
+        recovered = core.recover([shard_b64[index] for index in selected])
+        if recovered != secret:
+            raise RuntimeError(
+                "generated shard set failed round-trip verification; "
+                "no files were written"
+            )
+
+    output_dir = Path(out_dir)
+    paths = [
+        output_dir / f"share-{label}.txt"
+        for label in labels
+    ]
+    share_texts = []
+    for index, (body, label) in enumerate(zip(shard_b64, labels), start=1):
+        version = core.parse_shard(body)["version"]
+        share_texts.append(
+            _shard_comment(
+                mode,
+                threshold,
+                shares,
+                index,
+                label,
+                version=version,
+            )
+            + body
+            + "\n"
+        )
+
+    manifest_target = Path(manifest_path) if manifest_path else None
+    manifest_text = None
+    if manifest_target is not None:
+        document = manifest.build_shrd_manifest(
+            shard_b64,
+            labels=labels,
+            filenames=[path.name for path in paths],
+            file_contents=[text.encode("utf-8") for text in share_texts],
+            git_commit=os.environ.get("SHARD_CORE_GIT_COMMIT", "unknown"),
+        )
+        manifest_text = manifest.dumps(document)
+
+    destinations = list(paths)
+    if manifest_target is not None:
+        destinations.append(manifest_target)
+    safeio.preflight_output_paths(destinations, force=force)
     written = []
-    for i, (b64, label) in enumerate(zip(shard_b64, labels), start=1):
-        name = f"share-{label}.txt"
-        path = os.path.join(out_dir, name)
-        _write_text(path, _shard_comment(mode, threshold, shares, i, label) + b64 + "\n")
-        written.append(path)
+    for text, path in zip(share_texts, paths):
+        _write_text(str(path), text, force=force)
+        written.append(str(path))
+    if manifest_target is not None and manifest_text is not None:
+        _write_text(str(manifest_target), manifest_text, force=force)
     print(f"wrote {shares} shard(s), any {threshold} reconstruct:")
     for p in written:
         print(f"  {p}")
+    if manifest_target is not None:
+        print(f"  manifest: {manifest_target}")
     print("\nEach shard is self-contained and reveals NOTHING on its own.")
     print("Store shards in separate places; keep fewer than the threshold in any one place.")
 
@@ -114,7 +246,16 @@ def _do_protect(secret: bytes, threshold: int, shares: int, out_dir: str, labels
 def _cmd_protect(args) -> None:
     secret = _read_input(args.input)
     labels = args.labels.split(",") if args.labels else [f"{i:02d}" for i in range(1, args.shares + 1)]
-    _do_protect(secret, args.threshold, args.shares, args.out_dir, labels, "protect")
+    _do_protect(
+        secret,
+        args.threshold,
+        args.shares,
+        args.out_dir,
+        labels,
+        "protect",
+        force=args.force,
+        manifest_path=getattr(args, "manifest", None),
+    )
 
 
 def _cmd_recover(args) -> None:
@@ -123,7 +264,7 @@ def _cmd_recover(args) -> None:
         secret = core.recover(shard_b64)
     except ValueError as exc:
         sys.exit(f"error: {exc}")
-    _write_secret(args.output, secret)
+    _emit_secret(args, secret)
 
 
 def _cmd_info(args) -> None:
@@ -138,23 +279,103 @@ def _cmd_info(args) -> None:
     )
 
 
+def _format_combinations(values) -> str:
+    if not values:
+        return "none"
+    return ",".join("+".join(str(index) for index in value) for value in values)
+
+
+def _cmd_verify_set(args) -> None:
+    shard_b64 = [_read_shard_file(path) for path in args.shards]
+    verification = core.verify_complete_set(shard_b64)
+    complete = verification.supplied_indices == tuple(
+        range(1, verification.declared_total + 1)
+    )
+    passed = verification.ok and (complete or not args.require_complete)
+    version = core.parse_shard(shard_b64[0])["version"]
+    tested = (
+        len(verification.successful_combinations)
+        + len(verification.failed_combinations)
+    )
+    print(f"set_id: {verification.set_id}")
+    print(f"format: SHRD-v{version}")
+    print(f"threshold: {verification.threshold}")
+    print(f"declared_total: {verification.declared_total}")
+    print(
+        "supplied_indices: "
+        + ",".join(str(index) for index in verification.supplied_indices)
+    )
+    print(f"tested_combinations: {tested}")
+    print(
+        "successful_combinations: "
+        f"{_format_combinations(verification.successful_combinations)}"
+    )
+    print(
+        "failed_combinations: "
+        f"{_format_combinations(verification.failed_combinations)}"
+    )
+    print(f"complete_set: {'yes' if complete else 'no'}")
+    print(f"result: {'PASS' if passed else 'FAIL'}")
+    if not passed:
+        raise SystemExit(1)
+
+
+def _prompt_fordefi_phrase(args) -> bytes:
+    if not sys.stdin.isatty():
+        raise ValueError("interactive Fordefi phrase entry requires a TTY")
+    allow_nonstandard = getattr(args, "allow_nonstandard_phrase", False)
+    first = fordefi_support.canonicalize_recovery_phrase(
+        getpass.getpass("Fordefi recovery phrase: "),
+        allow_nonstandard=allow_nonstandard,
+    )
+    second = fordefi_support.canonicalize_recovery_phrase(
+        getpass.getpass("Confirm Fordefi recovery phrase: "),
+        allow_nonstandard=allow_nonstandard,
+    )
+    if first != second:
+        raise ValueError("Fordefi recovery phrase entries do not match")
+    return first
+
+
 def _cmd_fordefi_split(args) -> None:
-    phrase = _read_input(args.phrase_file) if args.phrase_file else getpass.getpass(
-        "Fordefi recovery phrase: "
-    ).encode()
-    phrase = phrase.rstrip(b"\r\n")
-    if not phrase:
-        sys.exit("error: empty recovery phrase")
+    if args.phrase_file:
+        phrase = fordefi_support.read_recovery_phrase_file(
+            args.phrase_file,
+            allow_nonstandard=getattr(args, "allow_nonstandard_phrase", False),
+            allow_insecure=getattr(args, "allow_insecure_phrase_file", False),
+        )
+    else:
+        phrase = _prompt_fordefi_phrase(args)
     labels = args.labels.split(",") if args.labels else [f"{i:02d}" for i in range(1, args.shares + 1)]
     if args.slip39:
+        if getattr(args, "manifest", None):
+            raise ValueError("--manifest is available only for SHRD output")
         try:
             mnemonics = slip39.split_bip39(phrase.decode(), args.threshold, args.shares)
         except Exception as exc:
             sys.exit(f"error: {exc}\n(the phrase must be a valid BIP-39 mnemonic for SLIP-39; "
                      f"otherwise omit --slip39 to use AEAD+Shamir shards)")
-        _do_slip39_split(mnemonics, args.out_dir, labels, "fordefi", args.threshold, args.shares, "bip39")
+        _do_slip39_split(
+            mnemonics,
+            args.out_dir,
+            labels,
+            "fordefi",
+            args.threshold,
+            args.shares,
+            "bip39",
+            force=args.force,
+        )
     else:
-        _do_protect(phrase, args.threshold, args.shares, args.out_dir, labels, "fordefi")
+        _do_protect(
+            phrase,
+            args.threshold,
+            args.shares,
+            args.out_dir,
+            labels,
+            "fordefi",
+            force=args.force,
+            manifest_path=getattr(args, "manifest", None),
+        )
     print("\nGive one share to each holder; store them in separate places.")
     print(f"Any {args.threshold} shares together rebuild the phrase; fewer reveal nothing.")
     print("A holder that only stores a share cannot rebuild anything alone.")
@@ -175,20 +396,15 @@ def _cmd_fordefi_combine(args) -> None:
             phrase = core.recover(shard_b64)
         except ValueError as exc:
             sys.exit(f"error: {exc}")
-    _write_secret(args.output, phrase)
+    _emit_secret(args, phrase)
 
 
 # --------------------------------------------------------------------------- #
 # SLIP-39 (optional; needs the `slip39` extra)
 # --------------------------------------------------------------------------- #
 def _slip39_passphrase(args) -> bytes:
-    if getattr(args, "passphrase_env", None):
-        val = os.environ.get(args.passphrase_env)
-        if val is None:
-            sys.exit(f"error: env var {args.passphrase_env} is not set")
-        return val.encode()
-    if getattr(args, "passphrase_file", None):
-        return Path(args.passphrase_file).read_bytes().rstrip(b"\r\n")
+    if getattr(args, "passphrase_env", None) or getattr(args, "passphrase_file", None):
+        return _get_passphrase(args, confirm=False)
     return b""
 
 
@@ -198,20 +414,50 @@ def _read_mnemonic_file(path: str) -> str:
     return " ".join(words.split())
 
 
-def _write_mnemonic_share(out_dir, label, mnemonic, mode, k, n, i, source) -> str:
-    Path(out_dir).mkdir(parents=True, exist_ok=True)
-    path = os.path.join(out_dir, f"share-{label}.txt")
+def _write_mnemonic_share(path, label, mnemonic, mode, k, n, i, source, *, force) -> str:
     tag = f" [{label}]" if label else ""
-    comment = f"# shard-core v1 {mode}({source}) SLIP-39 {k}-of-{n} share {i}/{n}{tag}\n"
-    _write_text(path, comment + mnemonic + "\n")
-    return path
+    comment = (
+        f"# shard-core SLIP-39 {mode}({source}) "
+        f"{k}-of-{n} share {i}/{n}{tag}\n"
+    )
+    _write_text(str(path), comment + mnemonic + "\n", force=force)
+    return str(path)
 
 
-def _do_slip39_split(mnemonics, out_dir, labels, mode, k, n, source) -> None:
+def _do_slip39_split(
+    mnemonics,
+    out_dir,
+    labels,
+    mode,
+    k,
+    n,
+    source,
+    *,
+    force=False,
+) -> None:
     labels = core.normalize_labels(labels, n)
+    output_dir = safeio.ensure_private_dir(out_dir)
+    paths = [
+        output_dir / f"share-{label}.txt"
+        for label in labels
+    ]
+    safeio.preflight_output_paths(paths, force=force)
     written = [
-        _write_mnemonic_share(out_dir, label, mn, mode, k, n, i, source)
-        for i, (mn, label) in enumerate(zip(mnemonics, labels), start=1)
+        _write_mnemonic_share(
+            path,
+            label,
+            mn,
+            mode,
+            k,
+            n,
+            i,
+            source,
+            force=force,
+        )
+        for i, (mn, label, path) in enumerate(
+            zip(mnemonics, labels, paths),
+            start=1,
+        )
     ]
     print(f"wrote {n} SLIP-39 share(s), any {k} reconstruct:")
     for p in written:
@@ -237,7 +483,16 @@ def _cmd_slip39_split(args) -> None:
             mnemonics, source = slip39.split_master_secret(secret, args.threshold, args.shares, pw), "raw"
     except Exception as exc:
         sys.exit(f"error: {exc}")
-    _do_slip39_split(mnemonics, args.out_dir, labels, "slip39", args.threshold, args.shares, source)
+    _do_slip39_split(
+        mnemonics,
+        args.out_dir,
+        labels,
+        "slip39",
+        args.threshold,
+        args.shares,
+        source,
+        force=args.force,
+    )
 
 
 def _cmd_slip39_combine(args) -> None:
@@ -248,11 +503,35 @@ def _cmd_slip39_combine(args) -> None:
     except Exception as exc:
         sys.exit(f"error: {exc}")
     if args.bip39:
-        _write_text(args.output, slip39.entropy_to_bip39(secret) + "\n")
+        _emit_secret(args, (slip39.entropy_to_bip39(secret) + "\n").encode())
     elif args.hex:
-        _write_text(args.output, secret.hex() + "\n")
+        _emit_secret(args, (secret.hex() + "\n").encode())
     else:
-        _write_secret(args.output, secret)
+        _emit_secret(args, secret)
+
+
+def _cmd_generate_key(args) -> None:
+    if not (16 <= args.bytes <= 1024):
+        raise ValueError("--bytes must be between 16 and 1024")
+    if args.output == "-":
+        raise ValueError("generate-key refuses stdout; use --output FILE")
+
+    key = secrets.token_bytes(args.bytes)
+    if args.encoding == "hex":
+        encoded = key.hex().encode("ascii") + b"\n"
+    elif args.encoding == "base64":
+        encoded = base64.b64encode(key) + b"\n"
+    else:
+        encoded = key
+
+    safeio.atomic_write_bytes(
+        args.output,
+        encoded,
+        force=args.force,
+    )
+    print(
+        f"wrote {args.bytes}-byte {args.encoding} credential to {args.output}"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -261,6 +540,31 @@ def _cmd_slip39_combine(args) -> None:
 def _add_passphrase_opts(p: argparse.ArgumentParser) -> None:
     p.add_argument("--passphrase-env", metavar="VAR", help="read passphrase from an env var")
     p.add_argument("--passphrase-file", metavar="FILE", help="read passphrase from a file")
+    p.add_argument(
+        "--allow-insecure-passphrase-file",
+        action="store_true",
+        help="allow a symlink or group/world-accessible passphrase file",
+    )
+
+
+def _add_secret_output_args(parser: argparse.ArgumentParser) -> None:
+    output = parser.add_mutually_exclusive_group(required=True)
+    output.add_argument(
+        "-o",
+        "--output",
+        metavar="FILE",
+        help="write sensitive plaintext to FILE",
+    )
+    output.add_argument(
+        "--stdout",
+        action="store_true",
+        help="explicitly write sensitive plaintext to stdout",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="replace an existing regular output file; symlinks are never followed",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -274,6 +578,11 @@ def build_parser() -> argparse.ArgumentParser:
     enc = sub.add_parser("encrypt", help="passphrase-encrypt a secret (AEAD)")
     enc.add_argument("-i", "--input", default="-", help="input file, or - for stdin")
     enc.add_argument("-o", "--output", default="-", help="output file, or - for stdout")
+    enc.add_argument(
+        "--force",
+        action="store_true",
+        help="replace an existing regular output file; symlinks are never followed",
+    )
     enc.add_argument("--scrypt-n", type=int, default=core.DEFAULT_SCRYPT_N_LOG2,
                      dest="scrypt_n", metavar="LOG2", help="scrypt cost as log2(N) (default 17)")
     _add_passphrase_opts(enc)
@@ -281,7 +590,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     dec = sub.add_parser("decrypt", help="passphrase-decrypt a secret")
     dec.add_argument("-i", "--input", default="-", help="input file, or - for stdin")
-    dec.add_argument("-o", "--output", default="-", help="output file, or - for stdout")
+    _add_secret_output_args(dec)
     _add_passphrase_opts(dec)
     dec.set_defaults(func=_cmd_decrypt)
 
@@ -291,10 +600,20 @@ def build_parser() -> argparse.ArgumentParser:
     pro.add_argument("-i", "--input", default="-", help="secret file, or - for stdin")
     pro.add_argument("-o", "--out-dir", default="shards", dest="out_dir", help="output directory")
     pro.add_argument("--labels", help="comma-separated labels (one per shard)")
+    pro.add_argument(
+        "--manifest",
+        metavar="FILE",
+        help="write a non-secret SHRD inventory manifest",
+    )
+    pro.add_argument(
+        "--force",
+        action="store_true",
+        help="replace existing regular share files; symlinks are never followed",
+    )
     pro.set_defaults(func=_cmd_protect)
 
     rec = sub.add_parser("recover", help="reconstruct a secret from shards")
-    rec.add_argument("-o", "--output", default="-", help="output file, or - for stdout")
+    _add_secret_output_args(rec)
     rec.add_argument("shards", nargs="+", help="shard files (>= threshold)")
     rec.set_defaults(func=_cmd_recover)
 
@@ -302,21 +621,56 @@ def build_parser() -> argparse.ArgumentParser:
     inf.add_argument("shard", help="a shard file")
     inf.set_defaults(func=_cmd_info)
 
+    verify = sub.add_parser(
+        "verify-set",
+        help="authenticate every threshold combination in a SHRD set",
+    )
+    verify.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="also require every declared share index",
+    )
+    verify.add_argument("shards", nargs="+", help="SHRD share files")
+    verify.set_defaults(func=_cmd_verify_set)
+
     fd = sub.add_parser("fordefi", help="guided Fordefi recovery-phrase workflow")
     fdsub = fd.add_subparsers(dest="fordefi_command", required=True)
 
     fds = fdsub.add_parser("split", help="shard a Fordefi recovery phrase")
     fds.add_argument("-t", "--threshold", type=int, default=2, help="shards needed (default 2)")
     fds.add_argument("-n", "--shares", type=int, default=3, help="total shards (default 3)")
-    fds.add_argument("--phrase-file", help="file with the phrase (else prompt)")
+    fds.add_argument(
+        "--phrase-file",
+        help="controlled automation file; hidden interactive entry is preferred",
+    )
+    fds.add_argument(
+        "--allow-nonstandard-phrase",
+        action="store_true",
+        help="allow a non-12-word or non-lowercase ASCII Fordefi phrase",
+    )
+    fds.add_argument(
+        "--allow-insecure-phrase-file",
+        action="store_true",
+        help="allow a symlink or group/world-accessible phrase file",
+    )
     fds.add_argument("--labels", help="comma-separated labels (default: numbered 01..0n)")
     fds.add_argument("-o", "--out-dir", default="fordefi-shards", dest="out_dir", help="output directory")
+    fds.add_argument(
+        "--manifest",
+        metavar="FILE",
+        help="write a non-secret SHRD inventory manifest",
+    )
+    fds.add_argument(
+        "--force",
+        action="store_true",
+        help="replace existing regular share files; symlinks are never followed",
+    )
     fds.add_argument("--slip39", action="store_true",
                      help="emit SLIP-39 word-list shares (phrase must be valid BIP-39)")
     fds.set_defaults(func=_cmd_fordefi_split)
 
     fdc = fdsub.add_parser("combine", help="recover a Fordefi recovery phrase")
-    fdc.add_argument("-o", "--output", default="-", help="output file, or - for stdout")
+    _add_secret_output_args(fdc)
     fdc.add_argument("shards", nargs="+", help="shard files (>= threshold)")
     fdc.add_argument("--slip39", action="store_true", help="shards are SLIP-39 word lists")
     fdc.set_defaults(func=_cmd_fordefi_combine)
@@ -332,16 +686,51 @@ def build_parser() -> argparse.ArgumentParser:
     s39s.add_argument("--secret-file", help="raw master-secret file (16/20/24/28/32 bytes)")
     s39s.add_argument("--labels", help="comma-separated labels")
     s39s.add_argument("-o", "--out-dir", default="slip39-shares", dest="out_dir", help="output directory")
+    s39s.add_argument(
+        "--force",
+        action="store_true",
+        help="replace existing regular share files; symlinks are never followed",
+    )
     _add_passphrase_opts(s39s)
     s39s.set_defaults(func=_cmd_slip39_split)
 
     s39c = s39sub.add_parser("combine", help="reconstruct a secret from SLIP-39 shares")
     s39c.add_argument("shares", nargs="+", help="SLIP-39 share files (>= threshold)")
-    s39c.add_argument("-o", "--output", default="-", help="output file, or - for stdout")
+    _add_secret_output_args(s39c)
     s39c.add_argument("--bip39", action="store_true", help="output as a BIP-39 phrase")
     s39c.add_argument("--hex", action="store_true", help="output as hex")
     _add_passphrase_opts(s39c)
     s39c.set_defaults(func=_cmd_slip39_combine)
+
+    keygen = sub.add_parser(
+        "generate-key",
+        help="generate a random wrapping credential into a private file",
+    )
+    keygen.add_argument(
+        "--bytes",
+        type=int,
+        required=True,
+        help="random byte count (16..1024)",
+    )
+    keygen.add_argument(
+        "--encoding",
+        choices=("hex", "base64", "raw"),
+        required=True,
+        help="output encoding",
+    )
+    keygen.add_argument(
+        "-o",
+        "--output",
+        required=True,
+        metavar="FILE",
+        help="write the credential to FILE; stdout is refused",
+    )
+    keygen.add_argument(
+        "--force",
+        action="store_true",
+        help="replace an existing regular output file; symlinks are never followed",
+    )
+    keygen.set_defaults(func=_cmd_generate_key)
 
     wiz = sub.add_parser("wizard", help="interactive guided mode (also runs with no arguments)")
     wiz.set_defaults(func=_cmd_wizard)
@@ -363,7 +752,10 @@ def main(argv: list[str] | None = None) -> None:
         run_wizard()
         return
     args = build_parser().parse_args(argv)
-    args.func(args)
+    try:
+        args.func(args)
+    except (OSError, RuntimeError, ValueError) as exc:
+        sys.exit(f"error: {exc}")
 
 
 if __name__ == "__main__":
