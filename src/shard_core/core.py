@@ -48,6 +48,16 @@ DEFAULT_SCRYPT_N_LOG2 = 17
 DEFAULT_SCRYPT_R = 8
 DEFAULT_SCRYPT_P = 1
 
+# Upper bound on the scrypt working set. The cost parameters of an encrypt
+# blob are attacker-controlled header bytes, and scrypt allocates
+# 128 * N * r bytes: an unbounded n_log2/r would let a hostile blob turn
+# `decrypt` into an out-of-memory kill instead of a clean ValueError.
+# 8 GiB is far above anything reachable through the CLI, whose only cost knob
+# is --scrypt-n (r is fixed at 8, so the default is 128 MiB and even
+# --scrypt-n 23 stays inside the bound).
+MAX_SCRYPT_N_LOG2 = 31
+MAX_SCRYPT_MEMORY = 8 * (1 << 30)  # 8 GiB
+
 
 # --------------------------------------------------------------------------- #
 # AEAD
@@ -115,7 +125,28 @@ def _combine_key(parts: list[tuple[int, bytes, bytes]]) -> bytes:
 # --------------------------------------------------------------------------- #
 # Passphrase KDF
 # --------------------------------------------------------------------------- #
+def _check_scrypt_params(n_log2: int, r: int, p: int) -> None:
+    """Reject cost parameters before they reach scrypt.
+
+    Applied on both sides so the two stay symmetric: nothing that ``encrypt``
+    accepts can be rejected by ``decrypt``, and vice versa.
+    """
+    if not (1 <= n_log2 <= MAX_SCRYPT_N_LOG2):
+        raise ValueError(
+            f"invalid scrypt cost: n_log2 must be 1..{MAX_SCRYPT_N_LOG2}, got {n_log2}"
+        )
+    if r < 1 or p < 1:
+        raise ValueError(f"invalid scrypt cost: r and p must be >= 1, got r={r} p={p}")
+    memory = 128 * (1 << n_log2) * r
+    if memory > MAX_SCRYPT_MEMORY:
+        raise ValueError(
+            f"scrypt cost too large: n_log2={n_log2} r={r} would need "
+            f"{memory >> 30} GiB (limit {MAX_SCRYPT_MEMORY >> 30} GiB)"
+        )
+
+
 def _derive(passphrase: bytes, salt: bytes, n_log2: int, r: int, p: int) -> bytes:
+    _check_scrypt_params(n_log2, r, p)
     return scrypt(passphrase, salt, key_len=32, N=1 << n_log2, r=r, p=p)
 
 

@@ -143,7 +143,7 @@ Format v1 shards and blobs remain readable — they are recognised by the versio
 - **Offline only.** No code path opens a socket. Run key operations on an airgapped machine.
 - **Confidentiality** is information-theoretic (Shamir); **integrity** is authenticated (ChaCha20-Poly1305).
 - **Format v2 authenticates the shard header** as AEAD associated data, so an edited threshold/share count fails the MAC instead of producing a misleading error. v1 shards remain readable, but their headers are *unauthenticated* — re-shard (`protect` again) to upgrade.
-- **Passphrase KDF** is scrypt (default cost `N = 2**17`).
+- **Passphrase KDF** is scrypt (default cost `N = 2**17`). The cost parameters live in the blob header, so `decrypt` bounds them (`n_log2` 1–31, working set ≤ 8 GiB) before calling scrypt — a corrupt or hostile blob fails with a clear error instead of an out-of-memory kill. The bound is applied identically on encrypt, so it can never lock you out of your own data.
 - Recovered secrets are written `0600`; passphrases are read via prompt / env / file, never a CLI argument.
 - **`--passphrase-env` is the weakest of the three.** An env var is readable via `/proc/PID/environ` by any process running as the same user, is inherited by child processes, and the command that set it often persists in shell history. Prefer the interactive prompt, or `--passphrase-file` pointing at a ramdisk (`/dev/shm`, `tmpfs`) file you delete afterwards.
 - Python cannot reliably zero secrets in memory — treat the host as trusted for the duration of an operation.

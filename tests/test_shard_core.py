@@ -18,6 +18,8 @@ FAST_N = 12
 # Byte offsets inside a decoded protect shard (see core.HEADER_LEN).
 OFF_VERSION, OFF_THRESHOLD, OFF_SHARES, OFF_INDEX = 4, 5, 6, 7
 OFF_CT_LEN = 68
+# Byte offsets inside a decoded encrypt blob.
+OFF_N_LOG2, OFF_R, OFF_P = 6, 7, 8
 
 
 def _mutate(shard_b64: str, offset: int, value: int) -> str:
@@ -262,6 +264,50 @@ class TestMalformedEncryptBlobs(unittest.TestCase):
         raw = bytearray(base64.b64decode(blob))
         raw[OFF_VERSION] = 7
         self._reject(base64.b64encode(bytes(raw)).decode(), "unsupported shard-core format version 7")
+
+    def _with_cost(self, **overrides):
+        raw = bytearray(base64.b64decode(core.encrypt(b"x", b"pw", n_log2=FAST_N)))
+        for off, val in overrides.items():
+            raw[globals()[off]] = val
+        return base64.b64encode(bytes(raw)).decode()
+
+    def test_absurd_n_log2_rejected(self):
+        # Must fail on the header check, never by attempting the allocation.
+        self._reject(self._with_cost(OFF_N_LOG2=255), "invalid scrypt cost")
+
+    def test_zero_r_rejected(self):
+        self._reject(self._with_cost(OFF_R=0), "r and p must be >= 1")
+
+    def test_zero_p_rejected(self):
+        self._reject(self._with_cost(OFF_P=0), "r and p must be >= 1")
+
+    def test_excessive_memory_rejected(self):
+        # n_log2=31 is within range, but 128 * 2**31 * 8 is ~2 TiB.
+        self._reject(self._with_cost(OFF_N_LOG2=31, OFF_R=8), "scrypt cost too large")
+
+
+class TestScryptCostBounds(unittest.TestCase):
+    """The cost parameters are attacker-controlled header bytes."""
+
+    def test_defaults_are_accepted(self):
+        core._check_scrypt_params(
+            core.DEFAULT_SCRYPT_N_LOG2, core.DEFAULT_SCRYPT_R, core.DEFAULT_SCRYPT_P
+        )
+
+    def test_cli_max_cost_is_accepted(self):
+        # --scrypt-n 23 with the fixed r=8 sits exactly on the 8 GiB bound;
+        # nothing reachable through the CLI may be locked out by this check.
+        core._check_scrypt_params(23, core.DEFAULT_SCRYPT_R, core.DEFAULT_SCRYPT_P)
+
+    def test_out_of_range_n_log2_rejected(self):
+        for bad in (0, core.MAX_SCRYPT_N_LOG2 + 1, 255):
+            with self.subTest(n_log2=bad), self.assertRaises(ValueError):
+                core._check_scrypt_params(bad, 8, 1)
+
+    def test_encrypt_and_decrypt_share_the_bound(self):
+        # Symmetric by construction: encrypt cannot mint a blob decrypt refuses.
+        with self.assertRaises(ValueError):
+            core.encrypt(b"x", b"pw", n_log2=200)
 
 
 class TestNoAssertDependence(unittest.TestCase):
