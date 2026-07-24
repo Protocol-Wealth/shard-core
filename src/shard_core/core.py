@@ -19,6 +19,7 @@ Two top-level flows:
 from __future__ import annotations
 
 import base64
+import binascii
 import struct
 
 from Crypto.Cipher import ChaCha20_Poly1305
@@ -31,6 +32,14 @@ MAGIC_ENCRYPT = b"SHEN"
 FORMAT_VERSION = 2
 SUPPORTED_VERSIONS = (1, 2)
 KDF_SCRYPT = 1
+
+# Fixed-size prefix of a protect shard:
+#   magic(4) | version+threshold+shares+index(4) | nonce(12) | tag(16)
+#   | share_a(16) | share_b(16) | ct_len(4)
+HEADER_LEN = 4 + 4 + 12 + 16 + 16 + 16 + 4  # 72
+# Fixed-size prefix of an encrypt blob:
+#   magic(4) | version+kdf+n_log2+r+p(5) | salt(16) | nonce(12) | tag(16)
+ENC_HEADER_LEN = 4 + 5 + 16 + 12 + 16  # 53
 
 # scrypt cost defaults (N = 2**17 ~= 128 MiB): strong for interactive use.
 DEFAULT_SCRYPT_N_LOG2 = 17
@@ -82,13 +91,17 @@ def _encrypt_aad(version: int, kdf_id: int, n_log2: int, r: int, p: int, salt: b
 # Shamir over a 32-byte key (two 16-byte halves, paired by share index)
 # --------------------------------------------------------------------------- #
 def _split_key(k: int, n: int, key32: bytes) -> list[tuple[int, bytes, bytes]]:
-    a = Shamir.split(k, n, key32[:16])
-    b = Shamir.split(k, n, key32[16:])
-    out: list[tuple[int, bytes, bytes]] = []
-    for (ia, sa), (ib, sb) in zip(a, b):
-        assert ia == ib  # both splits enumerate indices 1..n in the same order
-        out.append((ia, sa, sb))
-    return out
+    """Split both halves of ``key32`` and pair them by share index.
+
+    Pairing is explicit rather than positional: an assert would be stripped
+    under ``python -O``, and mispaired halves would silently reconstruct the
+    wrong key.
+    """
+    a = dict(Shamir.split(k, n, key32[:16]))
+    b = dict(Shamir.split(k, n, key32[16:]))
+    if a.keys() != b.keys():
+        raise RuntimeError("internal error: Shamir half-share index mismatch")
+    return [(idx, a[idx], b[idx]) for idx in sorted(a)]
 
 
 def _combine_key(parts: list[tuple[int, bytes, bytes]]) -> bytes:
@@ -133,18 +146,47 @@ def protect(secret: bytes, threshold: int, shares: int) -> list[str]:
 
 
 def parse_shard(shard_b64: str) -> dict:
-    """Parse a protect shard's header without reconstructing the secret."""
-    blob = base64.b64decode(shard_b64)
+    """Parse a protect shard's header without reconstructing the secret.
+
+    Every malformed input is reported as ``ValueError``; no ``binascii.Error``,
+    ``struct.error`` or ``IndexError`` reaches the caller.
+    """
+    try:
+        blob = base64.b64decode(shard_b64, validate=True)
+    except binascii.Error as exc:
+        raise ValueError("shard is not valid base64") from exc
+    if len(blob) < HEADER_LEN:
+        raise ValueError(
+            f"shard truncated: expected at least {HEADER_LEN} bytes, got {len(blob)}"
+        )
     if blob[:4] != MAGIC_PROTECT:
         raise ValueError("not a shard-core protect shard")
     ver, k, n, idx = blob[4], blob[5], blob[6], blob[7]
+    if ver not in SUPPORTED_VERSIONS:
+        raise ValueError(f"unsupported shard-core format version {ver}")
+    if not (2 <= k <= n <= 255):
+        raise ValueError(
+            f"shard header is invalid: require 2 <= threshold <= shares <= 255, "
+            f"got threshold={k} shares={n}"
+        )
+    if not (1 <= idx <= n):
+        raise ValueError(
+            f"shard header is invalid: index {idx} is out of range for {n} shares"
+        )
     off = 8
     nonce = blob[off : off + 12]; off += 12
     tag = blob[off : off + 16]; off += 16
     sa = blob[off : off + 16]; off += 16
     sb = blob[off : off + 16]; off += 16
     (ctlen,) = struct.unpack(">I", blob[off : off + 4]); off += 4
-    ct = blob[off : off + ctlen]
+    present = len(blob) - HEADER_LEN
+    if present < ctlen:
+        raise ValueError(
+            f"shard truncated: header claims {ctlen} ciphertext bytes, {present} present"
+        )
+    if present > ctlen:
+        raise ValueError("shard has trailing garbage")
+    ct = blob[off:]
     return {
         "version": ver, "threshold": k, "shares": n, "index": idx,
         "nonce": nonce, "tag": tag, "share_a": sa, "share_b": sb, "ciphertext": ct,
@@ -222,7 +264,15 @@ def normalize_labels(labels, count: int) -> list[str]:
 
 
 def decrypt(blob_b64: str, passphrase: bytes) -> bytes:
-    blob = base64.b64decode(blob_b64)
+    try:
+        blob = base64.b64decode(blob_b64, validate=True)
+    except binascii.Error as exc:
+        raise ValueError("encrypted blob is not valid base64") from exc
+    if len(blob) < ENC_HEADER_LEN:
+        raise ValueError(
+            f"encrypted blob truncated: expected at least {ENC_HEADER_LEN} bytes, "
+            f"got {len(blob)}"
+        )
     if blob[:4] != MAGIC_ENCRYPT:
         raise ValueError("not a shard-core encrypt blob")
     ver, kdf, n_log2, r, p = blob[4], blob[5], blob[6], blob[7], blob[8]

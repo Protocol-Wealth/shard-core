@@ -1,8 +1,12 @@
 """Runs with stdlib unittest (no pytest needed): python -m unittest discover -s tests"""
 
 import base64
+import os
 import struct
+import subprocess
+import sys
 import unittest
+from pathlib import Path
 
 from shard_core import core, slip39
 
@@ -18,6 +22,13 @@ def _mutate(shard_b64: str, offset: int, value: int) -> str:
     """Return ``shard_b64`` with one header byte overwritten."""
     raw = bytearray(base64.b64decode(shard_b64))
     raw[offset] = value
+    return base64.b64encode(bytes(raw)).decode()
+
+
+def _with_ct_len(shard_b64: str, ct_len: int) -> str:
+    """Return ``shard_b64`` with the declared ciphertext length overwritten."""
+    raw = bytearray(base64.b64decode(shard_b64))
+    raw[OFF_CT_LEN : OFF_CT_LEN + 4] = struct.pack(">I", ct_len)
     return base64.b64encode(bytes(raw)).decode()
 
 
@@ -110,6 +121,109 @@ class TestProtectRecover(unittest.TestCase):
     def test_bad_params(self):
         with self.assertRaises(ValueError):
             core.protect(b"x", threshold=4, shares=3)
+
+
+class TestMalformedShards(unittest.TestCase):
+    """Every malformed shard must surface as a plain ValueError.
+
+    Never ``binascii.Error`` (a ValueError *subclass*), ``struct.error`` or
+    ``IndexError`` — the CLI catches only ValueError, so anything else becomes
+    a traceback in front of a user holding key material.
+    """
+
+    def setUp(self):
+        self.good = core.protect(b"a secret worth guarding", threshold=2, shares=3)[0]
+
+    def _reject(self, shard, needle=None):
+        for call in (core.parse_shard, lambda s: core.recover([s])):
+            with self.assertRaises(ValueError) as cm:
+                call(shard)
+            # exact type: binascii.Error would also satisfy assertRaises(ValueError)
+            self.assertIs(type(cm.exception), ValueError)
+            if needle is not None:
+                self.assertIn(needle, str(cm.exception))
+
+    def test_empty_string(self):
+        self._reject("", "truncated")
+
+    def test_not_base64(self):
+        self._reject("this is not base64!!", "not valid base64")
+
+    def test_ten_bytes(self):
+        self._reject(base64.b64encode(b"0123456789").decode(), "expected at least 72 bytes, got 10")
+
+    def test_wrong_magic(self):
+        self._reject(_mutate(self.good, 0, ord("X")), "not a shard-core protect shard")
+
+    def test_unsupported_version(self):
+        self._reject(_mutate(self.good, OFF_VERSION, 7), "unsupported shard-core format version 7")
+
+    def test_ct_len_larger_than_actual(self):
+        raw = base64.b64decode(self.good)
+        actual = len(raw) - core.HEADER_LEN
+        self._reject(
+            _with_ct_len(self.good, actual + 100),
+            f"header claims {actual + 100} ciphertext bytes, {actual} present",
+        )
+
+    def test_trailing_bytes(self):
+        padded = base64.b64encode(base64.b64decode(self.good) + b"junk").decode()
+        self._reject(padded, "trailing garbage")
+
+    def test_threshold_one(self):
+        self._reject(_mutate(self.good, OFF_THRESHOLD, 1), "threshold=1")
+
+    def test_threshold_above_shares(self):
+        self._reject(_mutate(self.good, OFF_THRESHOLD, 4), "threshold=4 shares=3")
+
+    def test_index_zero(self):
+        self._reject(_mutate(self.good, OFF_INDEX, 0), "index 0 is out of range")
+
+    def test_index_above_shares(self):
+        self._reject(_mutate(self.good, OFF_INDEX, 9), "index 9 is out of range")
+
+
+class TestMalformedEncryptBlobs(unittest.TestCase):
+    def _reject(self, blob, needle):
+        with self.assertRaises(ValueError) as cm:
+            core.decrypt(blob, b"pw")
+        self.assertIs(type(cm.exception), ValueError)
+        self.assertIn(needle, str(cm.exception))
+
+    def test_empty_string(self):
+        self._reject("", "truncated")
+
+    def test_not_base64(self):
+        self._reject("nope!!", "not valid base64")
+
+    def test_short_blob(self):
+        self._reject(base64.b64encode(b"SHEN" + b"\x02" * 8).decode(), "expected at least 53 bytes")
+
+    def test_wrong_magic(self):
+        blob = core.encrypt(b"x", b"pw", n_log2=FAST_N)
+        raw = bytearray(base64.b64decode(blob))
+        raw[0] = ord("X")
+        self._reject(base64.b64encode(bytes(raw)).decode(), "not a shard-core encrypt blob")
+
+    def test_unsupported_version(self):
+        blob = core.encrypt(b"x", b"pw", n_log2=FAST_N)
+        raw = bytearray(base64.b64decode(blob))
+        raw[OFF_VERSION] = 7
+        self._reject(base64.b64encode(bytes(raw)).decode(), "unsupported shard-core format version 7")
+
+
+class TestNoAssertDependence(unittest.TestCase):
+    """`python -O` strips asserts; the shard paths must not depend on them."""
+
+    def test_protect_recover_suite_passes_under_O(self):
+        repo = Path(__file__).resolve().parents[1]
+        env = dict(os.environ, PYTHONPATH=str(repo / "src"))
+        proc = subprocess.run(
+            [sys.executable, "-O", "-m", "unittest",
+             "tests.test_shard_core.TestProtectRecover"],
+            cwd=str(repo), env=env, capture_output=True, text=True,
+        )
+        self.assertEqual(proc.returncode, 0, f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")
 
 
 class TestFormatV2AAD(unittest.TestCase):

@@ -127,7 +127,10 @@ def _cmd_recover(args) -> None:
 
 
 def _cmd_info(args) -> None:
-    meta = core.parse_shard(_read_shard_file(args.shard))
+    try:
+        meta = core.parse_shard(_read_shard_file(args.shard))
+    except ValueError as exc:
+        sys.exit(f"error: {exc}")
     print(
         f"mode=protect version={meta['version']} "
         f"threshold={meta['threshold']} shares={meta['shares']} index={meta['index']} "
