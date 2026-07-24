@@ -22,10 +22,9 @@ fi
 
 mkdir -p "$BUNDLE/wheels"
 
-python3 -m pip wheel \
-  --no-deps \
-  --no-build-isolation \
-  --wheel-dir "$BUNDLE/wheels" \
+python3 -m build \
+  --wheel \
+  --outdir "$BUNDLE/wheels" \
   "$ROOT"
 
 python3 -m pip download \
