@@ -28,7 +28,8 @@ from Crypto.Random import get_random_bytes
 
 MAGIC_PROTECT = b"SHRD"
 MAGIC_ENCRYPT = b"SHEN"
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
+SUPPORTED_VERSIONS = (1, 2)
 KDF_SCRYPT = 1
 
 # scrypt cost defaults (N = 2**17 ~= 128 MiB): strong for interactive use.
@@ -40,17 +41,41 @@ DEFAULT_SCRYPT_P = 1
 # --------------------------------------------------------------------------- #
 # AEAD
 # --------------------------------------------------------------------------- #
-def _aead_encrypt(key: bytes, plaintext: bytes) -> tuple[bytes, bytes, bytes]:
+def _aead_encrypt(key: bytes, plaintext: bytes, aad: bytes = b"") -> tuple[bytes, bytes, bytes]:
     nonce = get_random_bytes(12)
     cipher = ChaCha20_Poly1305.new(key=key, nonce=nonce)
+    if aad:
+        cipher.update(aad)
     ct, tag = cipher.encrypt_and_digest(plaintext)
     return nonce, tag, ct
 
 
-def _aead_decrypt(key: bytes, nonce: bytes, tag: bytes, ct: bytes) -> bytes:
+def _aead_decrypt(key: bytes, nonce: bytes, tag: bytes, ct: bytes, aad: bytes = b"") -> bytes:
     cipher = ChaCha20_Poly1305.new(key=key, nonce=nonce)
-    # Raises ValueError if the key is wrong or the ciphertext was tampered with.
+    if aad:
+        cipher.update(aad)
+    # Raises ValueError if the key is wrong, the header was edited, or the
+    # ciphertext was tampered with.
     return cipher.decrypt_and_verify(ct, tag)
+
+
+# --------------------------------------------------------------------------- #
+# Associated data (format v2): the header is authenticated, not just carried
+# --------------------------------------------------------------------------- #
+def _protect_aad(version: int, threshold: int, shares: int) -> bytes:
+    """AEAD associated data for a ``protect`` shard header.
+
+    Deliberately excludes the share index: every shard of one ``protect`` run
+    carries the same ciphertext and tag, so the AAD must be identical across
+    them. Binding threshold/shares stops an edited header from turning a
+    tampered shard set into a misleading "need >= k shards" error.
+    """
+    return MAGIC_PROTECT + bytes([version, threshold, shares])
+
+
+def _encrypt_aad(version: int, kdf_id: int, n_log2: int, r: int, p: int, salt: bytes) -> bytes:
+    """AEAD associated data for an ``encrypt`` blob header (KDF params + salt)."""
+    return MAGIC_ENCRYPT + bytes([version, kdf_id, n_log2, r, p]) + salt
 
 
 # --------------------------------------------------------------------------- #
@@ -91,7 +116,7 @@ def protect(secret: bytes, threshold: int, shares: int) -> list[str]:
             "(a single share must never reconstruct the secret)"
         )
     key = get_random_bytes(32)
-    nonce, tag, ct = _aead_encrypt(key, secret)
+    nonce, tag, ct = _aead_encrypt(key, secret, _protect_aad(FORMAT_VERSION, threshold, shares))
     out = []
     for idx, sa, sb in _split_key(threshold, shares, key):
         header = (
@@ -143,7 +168,19 @@ def recover(shard_b64_list: list[str]) -> bytes:
     chosen = list(by_index.values())[:threshold]
     key = _combine_key([(p["index"], p["share_a"], p["share_b"]) for p in chosen])
     ref = parsed[0]
-    return _aead_decrypt(key, ref["nonce"], ref["tag"], ref["ciphertext"])
+    return _aead_decrypt(
+        key, ref["nonce"], ref["tag"], ref["ciphertext"],
+        _shard_aad(ref["version"], ref["threshold"], ref["shares"]),
+    )
+
+
+def _shard_aad(version: int, threshold: int, shares: int) -> bytes:
+    """AAD for a parsed shard: v1 headers were unauthenticated, v2 are bound."""
+    if version == 1:
+        return b""
+    if version == 2:
+        return _protect_aad(version, threshold, shares)
+    raise ValueError(f"unsupported shard-core format version {version}")
 
 
 # --------------------------------------------------------------------------- #
@@ -158,7 +195,8 @@ def encrypt(
 ) -> str:
     salt = get_random_bytes(16)
     key = _derive(passphrase, salt, n_log2, r, p)
-    nonce, tag, ct = _aead_encrypt(key, secret)
+    aad = _encrypt_aad(FORMAT_VERSION, KDF_SCRYPT, n_log2, r, p, salt)
+    nonce, tag, ct = _aead_encrypt(key, secret, aad)
     header = (
         MAGIC_ENCRYPT + bytes([FORMAT_VERSION, KDF_SCRYPT, n_log2, r, p]) + salt + nonce + tag
     )
@@ -187,7 +225,9 @@ def decrypt(blob_b64: str, passphrase: bytes) -> bytes:
     blob = base64.b64decode(blob_b64)
     if blob[:4] != MAGIC_ENCRYPT:
         raise ValueError("not a shard-core encrypt blob")
-    _ver, kdf, n_log2, r, p = blob[4], blob[5], blob[6], blob[7], blob[8]
+    ver, kdf, n_log2, r, p = blob[4], blob[5], blob[6], blob[7], blob[8]
+    if ver not in SUPPORTED_VERSIONS:
+        raise ValueError(f"unsupported shard-core format version {ver}")
     if kdf != KDF_SCRYPT:
         raise ValueError(f"unsupported KDF id {kdf}")
     off = 9
@@ -195,5 +235,7 @@ def decrypt(blob_b64: str, passphrase: bytes) -> bytes:
     nonce = blob[off : off + 12]; off += 12
     tag = blob[off : off + 16]; off += 16
     ct = blob[off:]
+    # v1 headers were carried but unauthenticated; v2 binds them as AAD.
+    aad = b"" if ver == 1 else _encrypt_aad(ver, kdf, n_log2, r, p, salt)
     key = _derive(passphrase, salt, n_log2, r, p)
-    return _aead_decrypt(key, nonce, tag, ct)
+    return _aead_decrypt(key, nonce, tag, ct, aad)

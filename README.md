@@ -76,7 +76,7 @@ Inspect a shard without reconstructing:
 
 ```bash
 shard-core info shards/share-02.txt
-#   mode=protect version=1 threshold=2 shares=3 index=2 ciphertext_bytes=...
+#   mode=protect version=2 threshold=2 shares=3 index=2 ciphertext_bytes=...
 ```
 
 ### Encrypt with a passphrase (no sharding)
@@ -134,10 +134,15 @@ shard-core fordefi combine --slip39 fordefi-shards/share-01.txt fordefi-shards/s
 
 Each `protect` shard is a text file: a `#` comment line plus one base64 line. The base64 decodes to `magic("SHRD") | version | threshold | total | index | nonce | tag | key_share_a | key_share_b | ct_len | ciphertext`. All shards from one `protect` carry the same ciphertext; only the key-share and index differ.
 
+**Format v2** (current) has the *identical byte layout* — the version byte reads `2` and the header is additionally bound as AEAD **associated data**, so editing it is detected. The AAD is `"SHRD" | version | threshold | total`; the share index is deliberately excluded, because one ciphertext is shared by every shard of a run and the AAD must therefore be identical across them. For `encrypt` blobs (`magic("SHEN") | version | kdf_id | n_log2 | r | p | salt | nonce | tag | ciphertext`) the AAD is `"SHEN" | version | kdf_id | n_log2 | r | p | salt`.
+
+Format v1 shards and blobs remain readable — they are recognised by the version byte and verified without AAD.
+
 ## Security notes
 
 - **Offline only.** No code path opens a socket. Run key operations on an airgapped machine.
 - **Confidentiality** is information-theoretic (Shamir); **integrity** is authenticated (ChaCha20-Poly1305).
+- **Format v2 authenticates the shard header** as AEAD associated data, so an edited threshold/share count fails the MAC instead of producing a misleading error. v1 shards remain readable, but their headers are *unauthenticated* — re-shard (`protect` again) to upgrade.
 - **Passphrase KDF** is scrypt (default cost `N = 2**17`).
 - Recovered secrets are written `0600`; passphrases are read via prompt / env / file, never a CLI argument.
 - Python cannot reliably zero secrets in memory — treat the host as trusted for the duration of an operation.

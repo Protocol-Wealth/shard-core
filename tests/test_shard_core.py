@@ -1,11 +1,44 @@
 """Runs with stdlib unittest (no pytest needed): python -m unittest discover -s tests"""
 
+import base64
+import struct
 import unittest
 
 from shard_core import core, slip39
 
 # Fast scrypt cost for tests only. Production default is 2**17.
 FAST_N = 12
+
+# Byte offsets inside a decoded protect shard (see core.HEADER_LEN).
+OFF_VERSION, OFF_THRESHOLD, OFF_SHARES, OFF_INDEX = 4, 5, 6, 7
+OFF_CT_LEN = 68
+
+
+def _mutate(shard_b64: str, offset: int, value: int) -> str:
+    """Return ``shard_b64`` with one header byte overwritten."""
+    raw = bytearray(base64.b64decode(shard_b64))
+    raw[offset] = value
+    return base64.b64encode(bytes(raw)).decode()
+
+
+def _protect_v1(secret: bytes, threshold: int, shares: int) -> list[str]:
+    """Build v1 shards: identical layout, version byte 1, and no AAD.
+
+    Replicates the pre-v2 writer so backward compatibility is tested against
+    real v1 bytes rather than against v2 code paths.
+    """
+    key = core.get_random_bytes(32)
+    nonce, tag, ct = core._aead_encrypt(key, secret)  # no AAD: that is the v1 format
+    out = []
+    for idx, sa, sb in core._split_key(threshold, shares, key):
+        header = (
+            core.MAGIC_PROTECT
+            + bytes([1, threshold, shares, idx])
+            + nonce + tag + sa + sb
+            + struct.pack(">I", len(ct))
+        )
+        out.append(base64.b64encode(header + ct).decode("ascii"))
+    return out
 
 
 class TestEncryptDecrypt(unittest.TestCase):
@@ -23,6 +56,15 @@ class TestEncryptDecrypt(unittest.TestCase):
         secret = bytes(range(256)) * 4
         blob = core.encrypt(secret, b"pw", n_log2=FAST_N)
         self.assertEqual(core.decrypt(blob, b"pw"), secret)
+
+    def test_version_downgrade_fails_mac(self):
+        # v2 binds the header as AAD; rewriting the version byte to 1 would
+        # otherwise silently select the unauthenticated legacy path.
+        blob = core.encrypt(b"downgrade me", b"pw", n_log2=FAST_N)
+        raw = bytearray(base64.b64decode(blob))
+        raw[OFF_VERSION] = 1
+        with self.assertRaises(ValueError):
+            core.decrypt(base64.b64encode(bytes(raw)).decode(), b"pw")
 
 
 class TestProtectRecover(unittest.TestCase):
@@ -68,6 +110,61 @@ class TestProtectRecover(unittest.TestCase):
     def test_bad_params(self):
         with self.assertRaises(ValueError):
             core.protect(b"x", threshold=4, shares=3)
+
+
+class TestFormatV2AAD(unittest.TestCase):
+    """v2 binds the shard header as AEAD associated data."""
+
+    def test_new_shards_are_v2(self):
+        meta = core.parse_shard(core.protect(b"x", threshold=2, shares=3)[0])
+        self.assertEqual(meta["version"], 2)
+
+    def test_tampered_threshold_byte_fails_mac(self):
+        # Raise the threshold on EVERY shard so the set stays self-consistent
+        # and enough shards are supplied: only the AAD can catch this.
+        shards = core.protect(b"header integrity", threshold=2, shares=3)
+        tampered = [_mutate(s, OFF_THRESHOLD, 3) for s in shards]
+        self.assertEqual(core.parse_shard(tampered[0])["threshold"], 3)
+        with self.assertRaises(ValueError):
+            core.recover(tampered)  # 3 shards supplied for the claimed 3-of-3
+
+    def test_tampered_shares_byte_fails_mac(self):
+        shards = core.protect(b"header integrity", threshold=2, shares=3)
+        tampered = [_mutate(s, OFF_SHARES, 4) for s in shards]
+        self.assertEqual(core.parse_shard(tampered[0])["shares"], 4)
+        with self.assertRaises(ValueError):
+            core.recover(tampered[:2])  # threshold still 2, so enough shards
+
+    def test_untampered_v2_still_recovers(self):
+        secret = b"control case"
+        shards = core.protect(secret, threshold=2, shares=3)
+        self.assertEqual(core.recover(shards[:2]), secret)
+
+
+class TestV1BackwardCompat(unittest.TestCase):
+    """v1 shards predate the AAD binding and must stay readable."""
+
+    def test_v1_shards_still_recover(self):
+        secret = b"written by shard-core v1"
+        shards = _protect_v1(secret, threshold=2, shares=3)
+        self.assertEqual(core.parse_shard(shards[0])["version"], 1)
+        for combo in [(0, 1), (0, 2), (1, 2)]:
+            self.assertEqual(core.recover([shards[i] for i in combo]), secret)
+
+    def test_v1_ciphertext_tamper_still_detected(self):
+        shards = _protect_v1(b"v1 integrity", threshold=2, shares=3)
+        raw = bytearray(base64.b64decode(shards[0]))
+        raw[-1] ^= 0xFF
+        shards[0] = base64.b64encode(bytes(raw)).decode()
+        with self.assertRaises(ValueError):
+            core.recover([shards[0], shards[1]])
+
+    def test_v1_header_tamper_is_not_detected_by_design(self):
+        # Documents the reason to re-shard: v1 headers are unauthenticated.
+        secret = b"v1 header is unbound"
+        shards = _protect_v1(secret, threshold=2, shares=3)
+        relabelled = [_mutate(s, OFF_SHARES, 4) for s in shards]
+        self.assertEqual(core.recover(relabelled[:2]), secret)
 
 
 class TestNormalizeLabels(unittest.TestCase):
