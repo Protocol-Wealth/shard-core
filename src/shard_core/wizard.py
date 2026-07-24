@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import getpass
 import os
+import sys
+from itertools import combinations
 from pathlib import Path
 
-from . import core, slip39
+from . import core, fordefi as fordefi_support, safeio, slip39
 
 
 def _ask(prompt: str, default: str = "") -> str:
@@ -38,12 +40,6 @@ def _yn(prompt: str, default: bool = True) -> bool:
     if not raw:
         return default
     return raw.lower().startswith("y")
-
-
-def _write_600(path: str, data: bytes) -> None:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(data)
 
 
 def _read_error(path: str, exc: Exception) -> None:
@@ -76,18 +72,21 @@ def _is_mnemonic(payload: str) -> bool:
 def run_wizard() -> None:
     print("\nshard-core — guided mode")
     print("For real key material, run this on an OFFLINE / airgapped machine.\n")
-    print("  1) Split a recovery phrase / secret into shares")
-    print("  2) Recover a phrase / secret from shares")
-    print("  3) Encrypt a file with a passphrase")
-    print("  4) Decrypt a file")
-    choice = _ask("Choose 1-4", "1")
+    print("  1) Split a Fordefi recovery phrase (SHRD)")
+    print("  2) Split another secret / confirmed BIP-39 phrase")
+    print("  3) Recover a phrase / secret from shares")
+    print("  4) Encrypt a file with a passphrase")
+    print("  5) Decrypt a file")
+    choice = _ask("Choose 1-5", "1")
     if choice == "1":
-        _wizard_split()
+        _wizard_split(fordefi_mode=True)
     elif choice == "2":
-        _wizard_recover()
+        _wizard_split(fordefi_mode=False)
     elif choice == "3":
-        _wizard_encrypt()
+        _wizard_recover()
     elif choice == "4":
+        _wizard_encrypt()
+    elif choice == "5":
         _wizard_decrypt()
     else:
         print("Nothing to do.")
@@ -107,12 +106,30 @@ def _read_secret() -> bytes:
         return b""
 
 
-def _wizard_split() -> None:
+def _wizard_split(*, fordefi_mode: bool = False) -> None:
     print("\nThis splits your secret into shares:")
     print("  - Each share ALONE reveals nothing.")
     print("  - The secret stays encrypted until enough shares are combined.")
     print("  - You choose the threshold: how many shares are needed to unlock it.\n")
-    secret = _read_secret()
+    if fordefi_mode:
+        if not sys.stdin.isatty():
+            print("Interactive Fordefi phrase entry requires a TTY.")
+            return
+        try:
+            secret = fordefi_support.canonicalize_recovery_phrase(
+                getpass.getpass("Fordefi recovery phrase: ")
+            )
+            confirmation = fordefi_support.canonicalize_recovery_phrase(
+                getpass.getpass("Confirm Fordefi recovery phrase: ")
+            )
+        except ValueError as exc:
+            print(f"Invalid Fordefi recovery phrase: {exc}")
+            return
+        if confirmation != secret:
+            print("Fordefi recovery phrase entries do not match.")
+            return
+    else:
+        secret = _read_secret()
     if not secret:
         print("Empty secret — nothing to do.")
         return
@@ -133,16 +150,18 @@ def _wizard_split() -> None:
             return
     raw = _ask("Optional labels (comma-separated), or press Enter for numbers", "")
     labels = core.normalize_labels(raw.split(",") if raw else [], n)
-    out = _ask("Output folder", "shares")
+    out = _ask(
+        "Output folder",
+        "fordefi-shares" if fordefi_mode else "shares",
+    )
 
     use_slip39 = False
-    if slip39.available():
+    if not fordefi_mode and slip39.available():
         use_slip39 = _yn("Use SLIP-39 word-list shares (recommended for seed phrases)?", True)
-    else:
+    elif not fordefi_mode:
         print("  (SLIP-39 not installed — using encrypted shards. For word lists:")
         print("   pip install 'shard-core[slip39]')")
 
-    Path(out).mkdir(parents=True, exist_ok=True)
     if use_slip39:
         try:
             payloads = slip39.split_bip39(secret.decode(), t, n)
@@ -155,12 +174,45 @@ def _wizard_split() -> None:
         payloads = core.protect(secret, t, n)
         kind = "protect"
 
-    written = []
-    for i, (body, label) in enumerate(zip(payloads, labels), start=1):
-        path = os.path.join(out, f"share-{label}.txt")
-        comment = f"# shard-core {kind} {t}-of-{n} share {i}/{n} [{label}]\n"
-        _write_600(path, (comment + body + "\n").encode())
-        written.append(path)
+    if kind == "protect":
+        try:
+            verification = core.verify_complete_set(payloads)
+            if not verification.ok:
+                raise RuntimeError("not every threshold combination authenticated")
+            for selected in combinations(range(n), t):
+                if core.recover([payloads[index] for index in selected]) != secret:
+                    raise RuntimeError("round-trip plaintext mismatch")
+        except (RuntimeError, ValueError) as exc:
+            print(f"Internal share-set self-test failed: {exc}")
+            print("No files were written.")
+            return
+
+    output_dir = Path(out)
+    paths = [output_dir / f"share-{label}.txt" for label in labels]
+    try:
+        safeio.preflight_output_paths(paths)
+        written = []
+        for i, (body, label, path) in enumerate(
+            zip(payloads, labels, paths),
+            start=1,
+        ):
+            if kind == "protect":
+                version = core.parse_shard(body)["version"]
+                mode = "fordefi" if fordefi_mode else "protect"
+                comment = (
+                    f"# shard-core SHRD-v{version} {mode} "
+                    f"{t}-of-{n} share {i}/{n} [{label}]\n"
+                )
+            else:
+                comment = (
+                    f"# shard-core SLIP-39 bip39 "
+                    f"{t}-of-{n} share {i}/{n} [{label}]\n"
+                )
+            safeio.atomic_write_bytes(path, (comment + body + "\n").encode())
+            written.append(str(path))
+    except (OSError, ValueError) as exc:
+        print(f"Cannot write share set: {exc}")
+        return
 
     print(f"\nWrote {n} shares. Any {t} together rebuild the secret; fewer than {t} reveal nothing.")
     for p in written:
@@ -200,7 +252,7 @@ def _wizard_recover() -> None:
                 text = slip39.entropy_to_bip39(secret).encode()
             except Exception:
                 text = secret
-            _write_600(out, text + b"\n")
+            safeio.atomic_write_bytes(out, text + b"\n")
         except Exception as exc:
             print(f"Recovery failed: {exc}")
             return
@@ -210,7 +262,11 @@ def _wizard_recover() -> None:
         except Exception as exc:
             print(f"Recovery failed: {exc}")
             return
-        _write_600(out, secret)
+        try:
+            safeio.atomic_write_bytes(out, secret)
+        except (OSError, ValueError) as exc:
+            print(f"Cannot write recovered secret: {exc}")
+            return
     print(f"\nRecovered -> {out}")
 
 
@@ -226,7 +282,14 @@ def _wizard_encrypt() -> None:
         print("Passphrases do not match.")
         return
     out = _ask("Write encrypted file to", "secret.enc")
-    _write_600(out, (core.encrypt(data, pw.encode()) + "\n").encode())
+    try:
+        safeio.atomic_write_bytes(
+            out,
+            (core.encrypt(data, pw.encode()) + "\n").encode(),
+        )
+    except (OSError, ValueError) as exc:
+        print(f"Cannot write encrypted file: {exc}")
+        return
     print(f"Encrypted -> {out}")
 
 
@@ -244,5 +307,9 @@ def _wizard_decrypt() -> None:
     except ValueError:
         print("Decryption failed (wrong passphrase or corrupted file).")
         return
-    _write_600(out, data)
+    try:
+        safeio.atomic_write_bytes(out, data)
+    except (OSError, ValueError) as exc:
+        print(f"Cannot write decrypted file: {exc}")
+        return
     print(f"Decrypted -> {out}")

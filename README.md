@@ -16,7 +16,7 @@ Cryptography is delegated to the well-reviewed [`pycryptodome`](https://pypi.org
 
 ## Install (WSL / macOS / Linux)
 
-One command from a clone — installs the `shard-core` command with SLIP-39 support:
+For development, install the declared test extra to include SLIP-39 coverage:
 
 ```bash
 git clone https://github.com/Protocol-Wealth/shard-core.git
@@ -30,7 +30,20 @@ Then just run it:
 shard-core            # guided, interactive mode — no flags to remember
 ```
 
-Prefer to do it by hand? `pipx install '.[slip39]'` (or `pip install '.[slip39]'`), or run without installing via `PYTHONPATH=src python3 -m shard_core --help`. Requires Python 3.9+.
+Use `pip install -e '.[test]'`, or run without installing via
+`PYTHONPATH=src python3 -m shard_core --help`. Requires Python 3.9+.
+
+For a ceremony host, do not install from a package index. On a connected,
+controlled packaging host, build the hash-locked bundle:
+
+```bash
+bash scripts/build-offline-bundle.sh
+```
+
+Transfer the generated `dist/shard-core-*-offline-linux-x86_64/` directory to
+the offline host. Follow its `VERIFY.md`, then run `install-offline.sh`. The
+installer verifies `SHA256SUMS` and uses only `--no-index`,
+`--find-links ./wheels`, and `--require-hashes`.
 
 ## Guided mode
 
@@ -53,8 +66,10 @@ So you can give one share to each holder (and one to a storage-only custodian), 
 | `encrypt` / `decrypt` | Passphrase-based AEAD (one ciphertext blob) |
 | `protect` / `recover` | Encrypt, then Shamir-split the key into `n` shards (`k` reconstruct) |
 | `info` | Show a shard's header (threshold/index) without reconstructing |
+| `verify-set` | Authenticate every threshold-sized combination in a SHRD set |
 | `fordefi split` / `fordefi combine` | Guided flow for a Fordefi recovery phrase |
 | `slip39 split` / `slip39 combine` | SLIP-39 word-list shares (needs the `slip39` extra) |
+| `generate-key` | Generate a random wrapping credential into a private file |
 
 ## Quickstart
 
@@ -92,7 +107,8 @@ shard-core decrypt -i secret.enc -o secret.txt
 Split a Fordefi recovery phrase into shares (numbered by default):
 
 ```bash
-shard-core fordefi split -t 3 -n 5 --phrase-file phrase.txt -o fordefi-shards/
+shard-core fordefi split -t 3 -n 5 \
+  -o fordefi-shards/ --manifest fordefi-shards/manifest.json
 #   -> share-01.txt  share-02.txt  ...  share-05.txt   (any 3 rebuild the phrase)
 ```
 
@@ -102,6 +118,23 @@ Give one share to each holder. Recover later (offline), then feed the phrase to 
 shard-core fordefi combine -o phrase.txt \
   fordefi-shards/share-01.txt fordefi-shards/share-02.txt fordefi-shards/share-03.txt
 ```
+
+Before distribution, authenticate every expected threshold combination:
+
+```bash
+shard-core verify-set --require-complete fordefi-shards/share-*.txt
+```
+
+SHRD split commands self-test every threshold combination in memory before
+writing any file. An optional manifest records the set ID, format, threshold,
+holder labels, filenames, and artifact hashes. It never contains a plaintext
+phrase hash or recovered-secret fingerprint. Holder labels and share-file
+comments are display metadata and are not cryptographically authenticated.
+
+Fordefi entry is hidden and entered twice. Whitespace is canonicalized, but
+word spelling, order, and case are never changed. Standard entry requires
+exactly 12 lowercase ASCII words. `--phrase-file` is available for controlled
+automation, but requires a small private regular file by default.
 
 ### SLIP-39 word-list shares
 
@@ -128,7 +161,17 @@ shard-core fordefi split   -t 3 -n 5 --phrase-file phrase.txt --slip39 -o fordef
 shard-core fordefi combine --slip39 fordefi-shards/share-01.txt fordefi-shards/share-02.txt fordefi-shards/share-03.txt
 ```
 
-**When to use which:** SLIP-39 (`slip39` / `--slip39`) is best for *seeds* — word lists you can write on steel or type into a hardware wallet, and it needs a 16/20/24/28/32-byte secret or a valid BIP-39 phrase. For an **arbitrary-length** secret (or non-BIP-39 data), use `protect` (AEAD + Shamir, base64 shards). Both give n-of-m recovery; SLIP-39 trades generality for interoperability and readable shares. An optional SLIP-39 passphrase is supported via `--passphrase-env` / `--passphrase-file`.
+**When to use which:** The Fordefi wizard always uses SHRD AEAD+Shamir and
+never assumes Fordefi words are BIP-39. SLIP-39 (`slip39` or the explicit
+advanced `--slip39` option) is only for material independently confirmed to be
+BIP-39 compatible. For arbitrary-length secrets, use `protect`.
+
+Generate a 32-byte wrapping credential without displaying it:
+
+```bash
+shard-core generate-key --bytes 32 --encoding hex \
+  --output /dev/shm/qw-coincover-wrap.key
+```
 
 ## Format
 
@@ -145,6 +188,13 @@ Format v1 shards and blobs remain readable — they are recognised by the versio
 - **Format v2 authenticates the shard header** as AEAD associated data, so an edited threshold/share count fails the MAC instead of producing a misleading error. v1 shards remain readable, but their headers are *unauthenticated* — re-shard (`protect` again) to upgrade.
 - **Passphrase KDF** is scrypt (default cost `N = 2**17`). The cost parameters live in the blob header, so `decrypt` bounds them (`n_log2` 1–31, working set ≤ 8 GiB) before calling scrypt — a corrupt or hostile blob fails with a clear error instead of an out-of-memory kill. The bound is applied identically on encrypt, so it can never lock you out of your own data.
 - Recovered secrets are written `0600`; passphrases are read via prompt / env / file, never a CLI argument.
+- Sensitive plaintext commands require either `--output FILE` or an explicit
+  `--stdout`. Existing regular files are not replaced without `--force`, and
+  final-component output symlinks are always refused.
+- New output directories are created mode `0700` and files are published mode
+  `0600`. These controls assume a trusted offline host and controlled parent
+  directories; they do not claim race resistance when an attacker can replace
+  arbitrary parent-directory components during the ceremony.
 - **`--passphrase-env` is the weakest of the three.** An env var is readable via `/proc/PID/environ` by any process running as the same user, is inherited by child processes, and the command that set it often persists in shell history. Prefer the interactive prompt, or `--passphrase-file` pointing at a ramdisk (`/dev/shm`, `tmpfs`) file you delete afterwards.
 - Python cannot reliably zero secrets in memory — treat the host as trusted for the duration of an operation.
 - Keep **fewer than the threshold** number of shares in any single place. A share is safe to hand to a storage-only custodian because it cannot decrypt below the threshold.

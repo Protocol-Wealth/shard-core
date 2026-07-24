@@ -20,9 +20,13 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import re
 import struct
-from collections import Counter
+from dataclasses import dataclass
+from itertools import combinations
+from math import comb
+from typing import Optional, Sequence, Tuple
 
 from Crypto.Cipher import ChaCha20_Poly1305
 from Crypto.Protocol.KDF import scrypt
@@ -57,6 +61,7 @@ DEFAULT_SCRYPT_P = 1
 # --scrypt-n 23 stays inside the bound).
 MAX_SCRYPT_N_LOG2 = 31
 MAX_SCRYPT_MEMORY = 8 * (1 << 30)  # 8 GiB
+MAX_RECOVERY_COMBINATIONS = 10_000
 
 
 # --------------------------------------------------------------------------- #
@@ -231,45 +236,424 @@ def parse_shard(shard_b64: str) -> dict:
 _SHARED_FIELDS = ("version", "threshold", "shares", "nonce", "tag", "ciphertext")
 
 
-def recover(shard_b64_list: list[str]) -> bytes:
-    """Reconstruct the secret from >= threshold shards.
+class RecoveryError(ValueError):
+    """No unambiguous authenticated recovery result could be produced."""
 
-    All shards must come from the same ``protect`` run. Mixing runs is checked
-    up front and reported precisely, rather than surfacing later as an opaque
-    MAC failure that reads like corruption.
+
+class RecoveryAmbiguityError(RecoveryError):
+    """More than one independent shard set authenticated."""
+
+
+class RecoveryCombinationLimitError(RecoveryError):
+    """Recovery was refused before cryptographic work due to its search size."""
+
+
+class _NoAuthenticatingCombination(RecoveryError):
+    """Internal signal: a candidate group had no authenticating subset."""
+
+
+@dataclass(frozen=True)
+class RecoveryMetadata:
+    selected_set_id: str
+    threshold: int
+    declared_total: int
+    supplied_indices: Tuple[int, ...]
+    duplicate_indices: Tuple[int, ...]
+    authenticating_combinations: Tuple[Tuple[int, ...], ...]
+    failed_combinations: Tuple[Tuple[int, ...], ...]
+    suspect_indices: Tuple[int, ...]
+    rejected_set_ids: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class VerificationMetadata:
+    set_id: str
+    threshold: int
+    declared_total: int
+    supplied_indices: Tuple[int, ...]
+    successful_combinations: Tuple[Tuple[int, ...], ...]
+    failed_combinations: Tuple[Tuple[int, ...], ...]
+
+    @property
+    def ok(self) -> bool:
+        return not self.failed_combinations
+
+
+def _shared_key(parsed: dict) -> tuple:
+    return tuple(parsed[field] for field in _SHARED_FIELDS)
+
+
+def protect_set_id(parsed: dict) -> str:
+    """Derive a stable, non-secret identifier from a protect run's shared fields."""
+    ciphertext = parsed["ciphertext"]
+    digest = hashlib.sha256()
+    digest.update(b"shard-core/protect-set-id/v1\x00")
+    digest.update(
+        bytes([
+            parsed["version"],
+            parsed["threshold"],
+            parsed["shares"],
+        ])
+    )
+    digest.update(parsed["nonce"])
+    digest.update(parsed["tag"])
+    digest.update(struct.pack(">I", len(ciphertext)))
+    digest.update(ciphertext)
+    return digest.hexdigest()
+
+
+def _dedupe_group(
+    group: list[dict],
+) -> tuple[dict[int, dict], Tuple[int, ...]]:
+    by_index: dict[int, dict] = {}
+    duplicates: set[int] = set()
+
+    for shard in group:
+        index = shard["index"]
+        previous = by_index.get(index)
+        if previous is None:
+            by_index[index] = shard
+            continue
+
+        same_share = (
+            previous["share_a"] == shard["share_a"]
+            and previous["share_b"] == shard["share_b"]
+        )
+        if not same_share:
+            raise RecoveryError(
+                f"conflicting payloads for share index {index}"
+            )
+        duplicates.add(index)
+
+    return by_index, tuple(sorted(duplicates))
+
+
+def _recover_group(
+    reference: dict,
+    by_index: dict[int, dict],
+    *,
+    max_combinations: int,
+) -> tuple[
+    bytes,
+    Tuple[Tuple[int, ...], ...],
+    Tuple[Tuple[int, ...], ...],
+]:
+    threshold = reference["threshold"]
+    indices = tuple(sorted(by_index))
+    combination_count = comb(len(indices), threshold)
+    if combination_count > max_combinations:
+        raise RecoveryCombinationLimitError(
+            f"recovery would require {combination_count} combinations; "
+            f"limit is {max_combinations}"
+        )
+
+    recovered: Optional[bytes] = None
+    successful: list[Tuple[int, ...]] = []
+    failed: list[Tuple[int, ...]] = []
+
+    for selected_indices in combinations(indices, threshold):
+        selected = [by_index[index] for index in selected_indices]
+        key = _combine_key([
+            (
+                shard["index"],
+                shard["share_a"],
+                shard["share_b"],
+            )
+            for shard in selected
+        ])
+        try:
+            candidate = _aead_decrypt(
+                key,
+                reference["nonce"],
+                reference["tag"],
+                reference["ciphertext"],
+                _shard_aad(
+                    reference["version"],
+                    reference["threshold"],
+                    reference["shares"],
+                ),
+            )
+        except ValueError:
+            failed.append(selected_indices)
+            continue
+
+        if recovered is None:
+            recovered = candidate
+        elif recovered != candidate:
+            raise RecoveryAmbiguityError(
+                "ambiguous authenticated plaintext across shard combinations"
+            )
+        successful.append(selected_indices)
+
+    if recovered is None:
+        raise _NoAuthenticatingCombination(
+            "no threshold-sized combination authenticated"
+        )
+
+    return recovered, tuple(successful), tuple(failed)
+
+
+def _raise_no_candidate(
+    parsed: list[dict],
+    groups: dict[tuple, list[dict]],
+    prepared: dict[str, tuple[dict[int, dict], Tuple[int, ...]]],
+) -> None:
+    if len(groups) > 1:
+        reference = parsed[0]
+        for position, shard in enumerate(parsed[1:], start=2):
+            for field in _SHARED_FIELDS:
+                if shard[field] != reference[field]:
+                    raise RecoveryError(
+                        f"shard {position} (index={shard['index']}) does not "
+                        f"match shard 1: differing {field} — shards are from "
+                        "different protect runs"
+                    )
+
+    reference = parsed[0]
+    set_id = protect_set_id(reference)
+    by_index, duplicates = prepared[set_id]
+    detail = (
+        f" (duplicate indices supplied: "
+        f"{', '.join(str(index) for index in duplicates)})"
+        if duplicates
+        else ""
+    )
+    raise RecoveryError(
+        f"need >= {reference['threshold']} distinct shards, "
+        f"got {len(by_index)}{detail}"
+    )
+
+
+def recover_with_report(
+    shard_b64_list: Sequence[str],
+    *,
+    max_combinations: int = MAX_RECOVERY_COMBINATIONS,
+) -> tuple[bytes, RecoveryMetadata]:
+    """Recover from one unambiguous authenticating shard set.
+
+    Candidate sets are grouped by their shared authenticated fields. Every
+    threshold-sized subset is tried within a bounded, invocation-wide search
+    budget. Structurally invalid input and conflicting duplicate indices are
+    fatal; unrelated or damaged redundant groups can be rejected while one
+    authenticating set succeeds.
     """
     if not shard_b64_list:
-        raise ValueError("no shards provided")
+        raise RecoveryError("no shards provided")
+    if max_combinations < 1:
+        raise RecoveryCombinationLimitError(
+            f"max_combinations must be >= 1, got {max_combinations}"
+        )
+
     parsed = [parse_shard(s) for s in shard_b64_list]
-    ref = parsed[0]
-    for position, p in enumerate(parsed[1:], start=2):
-        for field in _SHARED_FIELDS:
-            if p[field] != ref[field]:
-                raise ValueError(
-                    f"shard {position} (index={p['index']}) does not match shard 1: "
-                    f"differing {field} — shards are from different protect runs"
-                )
-    threshold = ref["threshold"]
-    # Deduplicate by share index; all shards carry the same ciphertext.
-    by_index: dict[int, dict] = {}
-    for p in parsed:
-        by_index[p["index"]] = p
-    if len(by_index) < threshold:
-        counts = Counter(p["index"] for p in parsed)
-        duplicates = sorted(p["index"] for p in parsed if counts[p["index"]] > 1)
-        detail = (
-            f" (duplicate indices supplied: {', '.join(str(i) for i in duplicates)})"
-            if duplicates else ""
+    groups: dict[tuple, list[dict]] = {}
+    for shard in parsed:
+        groups.setdefault(_shared_key(shard), []).append(shard)
+
+    prepared: dict[str, tuple[dict[int, dict], Tuple[int, ...]]] = {}
+    candidates: list[
+        tuple[str, dict, dict[int, dict], Tuple[int, ...], int]
+    ] = []
+    rejected_set_ids: set[str] = set()
+    total_combinations = 0
+
+    # Dedupe every group before attempting recovery. A conflicting duplicate
+    # is structural input ambiguity and must never be hidden by another group.
+    for group in groups.values():
+        reference = group[0]
+        set_id = protect_set_id(reference)
+        by_index, duplicates = _dedupe_group(group)
+        prepared[set_id] = (by_index, duplicates)
+        threshold = reference["threshold"]
+        if len(by_index) < threshold:
+            rejected_set_ids.add(set_id)
+            continue
+
+        count = comb(len(by_index), threshold)
+        total_combinations += count
+        candidates.append((set_id, reference, by_index, duplicates, count))
+
+    if not candidates:
+        _raise_no_candidate(parsed, groups, prepared)
+
+    # Enforce one aggregate budget before any Shamir combination or AEAD work.
+    if total_combinations > max_combinations:
+        raise RecoveryCombinationLimitError(
+            f"recovery would require {total_combinations} combinations; "
+            f"limit is {max_combinations}"
         )
-        raise ValueError(
-            f"need >= {threshold} distinct shards, got {len(by_index)}{detail}"
+
+    successful_sets: list[
+        tuple[
+            str,
+            bytes,
+            dict,
+            dict[int, dict],
+            Tuple[int, ...],
+            Tuple[Tuple[int, ...], ...],
+            Tuple[Tuple[int, ...], ...],
+        ]
+    ] = []
+    for set_id, reference, by_index, duplicates, _count in candidates:
+        try:
+            recovered, successful, failed = _recover_group(
+                reference,
+                by_index,
+                max_combinations=max_combinations,
+            )
+        except _NoAuthenticatingCombination:
+            rejected_set_ids.add(set_id)
+            continue
+        successful_sets.append(
+            (
+                set_id,
+                recovered,
+                reference,
+                by_index,
+                duplicates,
+                successful,
+                failed,
+            )
         )
-    chosen = list(by_index.values())[:threshold]
-    key = _combine_key([(p["index"], p["share_a"], p["share_b"]) for p in chosen])
-    ref = parsed[0]
-    return _aead_decrypt(
-        key, ref["nonce"], ref["tag"], ref["ciphertext"],
-        _shard_aad(ref["version"], ref["threshold"], ref["shares"]),
+
+    if not successful_sets:
+        raise RecoveryError("no candidate shard set authenticated")
+    if len(successful_sets) > 1:
+        set_ids = ", ".join(sorted(item[0] for item in successful_sets))
+        raise RecoveryAmbiguityError(
+            f"multiple independent shard sets authenticated: {set_ids}"
+        )
+
+    (
+        selected_set_id,
+        recovered,
+        reference,
+        by_index,
+        duplicates,
+        successful,
+        failed,
+    ) = successful_sets[0]
+
+    selected_indices = set(by_index)
+    successful_indices = {
+        index
+        for selected in successful
+        for index in selected
+    }
+    outside_indices = {
+        shard["index"]
+        for group in groups.values()
+        if protect_set_id(group[0]) != selected_set_id
+        for shard in group
+    }
+    suspect_indices = (
+        (selected_indices - successful_indices)
+        | (outside_indices - selected_indices)
+    )
+    rejected_set_ids.discard(selected_set_id)
+
+    metadata = RecoveryMetadata(
+        selected_set_id=selected_set_id,
+        threshold=reference["threshold"],
+        declared_total=reference["shares"],
+        supplied_indices=tuple(sorted({shard["index"] for shard in parsed})),
+        duplicate_indices=duplicates,
+        authenticating_combinations=successful,
+        failed_combinations=failed,
+        suspect_indices=tuple(sorted(suspect_indices)),
+        rejected_set_ids=tuple(sorted(rejected_set_ids)),
+    )
+    return recovered, metadata
+
+
+def recover(shard_b64_list: list[str]) -> bytes:
+    """Compatibility wrapper returning only the recovered plaintext."""
+    recovered, _metadata = recover_with_report(shard_b64_list)
+    return recovered
+
+
+def verify_complete_set(
+    shard_b64_list: Sequence[str],
+    *,
+    max_combinations: int = MAX_RECOVERY_COMBINATIONS,
+) -> VerificationMetadata:
+    """Authenticate every threshold-sized combination in one supplied set."""
+    if not shard_b64_list:
+        raise RecoveryError("no shards provided")
+    if max_combinations < 1:
+        raise RecoveryCombinationLimitError(
+            f"max_combinations must be >= 1, got {max_combinations}"
+        )
+
+    parsed = [parse_shard(shard) for shard in shard_b64_list]
+    groups: dict[tuple, list[dict]] = {}
+    for shard in parsed:
+        groups.setdefault(_shared_key(shard), []).append(shard)
+    if len(groups) != 1:
+        raise RecoveryError(
+            "complete-set verification requires exactly one protect set"
+        )
+
+    group = next(iter(groups.values()))
+    reference = group[0]
+    by_index, _duplicates = _dedupe_group(group)
+    threshold = reference["threshold"]
+    indices = tuple(sorted(by_index))
+    if len(indices) < threshold:
+        raise RecoveryError(
+            f"need >= {threshold} distinct shards, got {len(indices)}"
+        )
+
+    combination_count = comb(len(indices), threshold)
+    if combination_count > max_combinations:
+        raise RecoveryCombinationLimitError(
+            f"verification would require {combination_count} combinations; "
+            f"limit is {max_combinations}"
+        )
+
+    recovered: Optional[bytes] = None
+    successful: list[Tuple[int, ...]] = []
+    failed: list[Tuple[int, ...]] = []
+    for selected_indices in combinations(indices, threshold):
+        selected = [by_index[index] for index in selected_indices]
+        key = _combine_key([
+            (
+                shard["index"],
+                shard["share_a"],
+                shard["share_b"],
+            )
+            for shard in selected
+        ])
+        try:
+            candidate = _aead_decrypt(
+                key,
+                reference["nonce"],
+                reference["tag"],
+                reference["ciphertext"],
+                _shard_aad(
+                    reference["version"],
+                    reference["threshold"],
+                    reference["shares"],
+                ),
+            )
+        except ValueError:
+            failed.append(selected_indices)
+            continue
+
+        if recovered is None:
+            recovered = candidate
+        elif recovered != candidate:
+            raise RecoveryAmbiguityError(
+                "ambiguous authenticated plaintext across shard combinations"
+            )
+        successful.append(selected_indices)
+
+    return VerificationMetadata(
+        set_id=protect_set_id(reference),
+        threshold=threshold,
+        declared_total=reference["shares"],
+        supplied_indices=indices,
+        successful_combinations=tuple(successful),
+        failed_combinations=tuple(failed),
     )
 
 
