@@ -46,10 +46,22 @@ def _write_600(path: str, data: bytes) -> None:
         f.write(data)
 
 
-def _payload(path: str) -> str:
+def _read_error(path: str, exc: Exception) -> None:
+    """Report an unreadable file in one line — never a traceback at a prompt."""
+    reason = getattr(exc, "strerror", None) or str(exc)
+    print(f"cannot read {path}: {reason}")
+
+
+def _payload(path: str) -> str | None:
+    """Return a share file's payload, or None if the file cannot be read."""
+    try:
+        text = Path(path).read_text()
+    except (OSError, UnicodeDecodeError) as exc:
+        _read_error(path, exc)
+        return None
     lines = [
         ln.strip()
-        for ln in Path(path).read_text().splitlines()
+        for ln in text.splitlines()
         if ln.strip() and not ln.lstrip().startswith("#")
     ]
     return " ".join(lines)
@@ -87,7 +99,12 @@ def _read_secret() -> bytes:
     print("  2) Type or paste it now (hidden)")
     if _ask("Choose 1-2", "1") == "2":
         return getpass.getpass("Paste the phrase (hidden): ").encode()
-    return Path(_ask("Path to the file")).read_bytes().rstrip(b"\r\n")
+    path = _ask("Path to the file")
+    try:
+        return Path(path).read_bytes().rstrip(b"\r\n")
+    except OSError as exc:
+        _read_error(path, exc)
+        return b""
 
 
 def _wizard_split() -> None:
@@ -165,7 +182,12 @@ def _wizard_recover() -> None:
     if not files:
         print("No shares given.")
         return
-    payloads = [_payload(f) for f in files]
+    payloads = []
+    for f in files:
+        body = _payload(f)
+        if body is None:
+            return
+        payloads.append(body)
     out = _ask("Write the recovered secret to", "recovered.txt")
 
     if _is_mnemonic(payloads[0]):
@@ -193,7 +215,12 @@ def _wizard_recover() -> None:
 
 
 def _wizard_encrypt() -> None:
-    data = Path(_ask("File to encrypt")).read_bytes()
+    path = _ask("File to encrypt")
+    try:
+        data = Path(path).read_bytes()
+    except OSError as exc:
+        _read_error(path, exc)
+        return
     pw = getpass.getpass("Passphrase: ")
     if getpass.getpass("Confirm passphrase: ") != pw:
         print("Passphrases do not match.")
@@ -204,7 +231,12 @@ def _wizard_encrypt() -> None:
 
 
 def _wizard_decrypt() -> None:
-    blob = Path(_ask("Encrypted file")).read_text().strip()
+    path = _ask("Encrypted file")
+    try:
+        blob = Path(path).read_text().strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        _read_error(path, exc)
+        return
     pw = getpass.getpass("Passphrase: ")
     out = _ask("Write decrypted file to", "secret.out")
     try:

@@ -19,7 +19,10 @@ Two top-level flows:
 from __future__ import annotations
 
 import base64
+import binascii
+import re
 import struct
+from collections import Counter
 
 from Crypto.Cipher import ChaCha20_Poly1305
 from Crypto.Protocol.KDF import scrypt
@@ -28,42 +31,89 @@ from Crypto.Random import get_random_bytes
 
 MAGIC_PROTECT = b"SHRD"
 MAGIC_ENCRYPT = b"SHEN"
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
+SUPPORTED_VERSIONS = (1, 2)
 KDF_SCRYPT = 1
+
+# Fixed-size prefix of a protect shard:
+#   magic(4) | version+threshold+shares+index(4) | nonce(12) | tag(16)
+#   | share_a(16) | share_b(16) | ct_len(4)
+HEADER_LEN = 4 + 4 + 12 + 16 + 16 + 16 + 4  # 72
+# Fixed-size prefix of an encrypt blob:
+#   magic(4) | version+kdf+n_log2+r+p(5) | salt(16) | nonce(12) | tag(16)
+ENC_HEADER_LEN = 4 + 5 + 16 + 12 + 16  # 53
 
 # scrypt cost defaults (N = 2**17 ~= 128 MiB): strong for interactive use.
 DEFAULT_SCRYPT_N_LOG2 = 17
 DEFAULT_SCRYPT_R = 8
 DEFAULT_SCRYPT_P = 1
 
+# Upper bound on the scrypt working set. The cost parameters of an encrypt
+# blob are attacker-controlled header bytes, and scrypt allocates
+# 128 * N * r bytes: an unbounded n_log2/r would let a hostile blob turn
+# `decrypt` into an out-of-memory kill instead of a clean ValueError.
+# 8 GiB is far above anything reachable through the CLI, whose only cost knob
+# is --scrypt-n (r is fixed at 8, so the default is 128 MiB and even
+# --scrypt-n 23 stays inside the bound).
+MAX_SCRYPT_N_LOG2 = 31
+MAX_SCRYPT_MEMORY = 8 * (1 << 30)  # 8 GiB
+
 
 # --------------------------------------------------------------------------- #
 # AEAD
 # --------------------------------------------------------------------------- #
-def _aead_encrypt(key: bytes, plaintext: bytes) -> tuple[bytes, bytes, bytes]:
+def _aead_encrypt(key: bytes, plaintext: bytes, aad: bytes = b"") -> tuple[bytes, bytes, bytes]:
     nonce = get_random_bytes(12)
     cipher = ChaCha20_Poly1305.new(key=key, nonce=nonce)
+    if aad:
+        cipher.update(aad)
     ct, tag = cipher.encrypt_and_digest(plaintext)
     return nonce, tag, ct
 
 
-def _aead_decrypt(key: bytes, nonce: bytes, tag: bytes, ct: bytes) -> bytes:
+def _aead_decrypt(key: bytes, nonce: bytes, tag: bytes, ct: bytes, aad: bytes = b"") -> bytes:
     cipher = ChaCha20_Poly1305.new(key=key, nonce=nonce)
-    # Raises ValueError if the key is wrong or the ciphertext was tampered with.
+    if aad:
+        cipher.update(aad)
+    # Raises ValueError if the key is wrong, the header was edited, or the
+    # ciphertext was tampered with.
     return cipher.decrypt_and_verify(ct, tag)
+
+
+# --------------------------------------------------------------------------- #
+# Associated data (format v2): the header is authenticated, not just carried
+# --------------------------------------------------------------------------- #
+def _protect_aad(version: int, threshold: int, shares: int) -> bytes:
+    """AEAD associated data for a ``protect`` shard header.
+
+    Deliberately excludes the share index: every shard of one ``protect`` run
+    carries the same ciphertext and tag, so the AAD must be identical across
+    them. Binding threshold/shares stops an edited header from turning a
+    tampered shard set into a misleading "need >= k shards" error.
+    """
+    return MAGIC_PROTECT + bytes([version, threshold, shares])
+
+
+def _encrypt_aad(version: int, kdf_id: int, n_log2: int, r: int, p: int, salt: bytes) -> bytes:
+    """AEAD associated data for an ``encrypt`` blob header (KDF params + salt)."""
+    return MAGIC_ENCRYPT + bytes([version, kdf_id, n_log2, r, p]) + salt
 
 
 # --------------------------------------------------------------------------- #
 # Shamir over a 32-byte key (two 16-byte halves, paired by share index)
 # --------------------------------------------------------------------------- #
 def _split_key(k: int, n: int, key32: bytes) -> list[tuple[int, bytes, bytes]]:
-    a = Shamir.split(k, n, key32[:16])
-    b = Shamir.split(k, n, key32[16:])
-    out: list[tuple[int, bytes, bytes]] = []
-    for (ia, sa), (ib, sb) in zip(a, b):
-        assert ia == ib  # both splits enumerate indices 1..n in the same order
-        out.append((ia, sa, sb))
-    return out
+    """Split both halves of ``key32`` and pair them by share index.
+
+    Pairing is explicit rather than positional: an assert would be stripped
+    under ``python -O``, and mispaired halves would silently reconstruct the
+    wrong key.
+    """
+    a = dict(Shamir.split(k, n, key32[:16]))
+    b = dict(Shamir.split(k, n, key32[16:]))
+    if a.keys() != b.keys():
+        raise RuntimeError("internal error: Shamir half-share index mismatch")
+    return [(idx, a[idx], b[idx]) for idx in sorted(a)]
 
 
 def _combine_key(parts: list[tuple[int, bytes, bytes]]) -> bytes:
@@ -75,7 +125,28 @@ def _combine_key(parts: list[tuple[int, bytes, bytes]]) -> bytes:
 # --------------------------------------------------------------------------- #
 # Passphrase KDF
 # --------------------------------------------------------------------------- #
+def _check_scrypt_params(n_log2: int, r: int, p: int) -> None:
+    """Reject cost parameters before they reach scrypt.
+
+    Applied on both sides so the two stay symmetric: nothing that ``encrypt``
+    accepts can be rejected by ``decrypt``, and vice versa.
+    """
+    if not (1 <= n_log2 <= MAX_SCRYPT_N_LOG2):
+        raise ValueError(
+            f"invalid scrypt cost: n_log2 must be 1..{MAX_SCRYPT_N_LOG2}, got {n_log2}"
+        )
+    if r < 1 or p < 1:
+        raise ValueError(f"invalid scrypt cost: r and p must be >= 1, got r={r} p={p}")
+    memory = 128 * (1 << n_log2) * r
+    if memory > MAX_SCRYPT_MEMORY:
+        raise ValueError(
+            f"scrypt cost too large: n_log2={n_log2} r={r} would need "
+            f"{memory >> 30} GiB (limit {MAX_SCRYPT_MEMORY >> 30} GiB)"
+        )
+
+
 def _derive(passphrase: bytes, salt: bytes, n_log2: int, r: int, p: int) -> bytes:
+    _check_scrypt_params(n_log2, r, p)
     return scrypt(passphrase, salt, key_len=32, N=1 << n_log2, r=r, p=p)
 
 
@@ -91,7 +162,7 @@ def protect(secret: bytes, threshold: int, shares: int) -> list[str]:
             "(a single share must never reconstruct the secret)"
         )
     key = get_random_bytes(32)
-    nonce, tag, ct = _aead_encrypt(key, secret)
+    nonce, tag, ct = _aead_encrypt(key, secret, _protect_aad(FORMAT_VERSION, threshold, shares))
     out = []
     for idx, sa, sb in _split_key(threshold, shares, key):
         header = (
@@ -108,42 +179,107 @@ def protect(secret: bytes, threshold: int, shares: int) -> list[str]:
 
 
 def parse_shard(shard_b64: str) -> dict:
-    """Parse a protect shard's header without reconstructing the secret."""
-    blob = base64.b64decode(shard_b64)
+    """Parse a protect shard's header without reconstructing the secret.
+
+    Every malformed input is reported as ``ValueError``; no ``binascii.Error``,
+    ``struct.error`` or ``IndexError`` reaches the caller.
+    """
+    try:
+        blob = base64.b64decode(shard_b64, validate=True)
+    except binascii.Error as exc:
+        raise ValueError("shard is not valid base64") from exc
+    if len(blob) < HEADER_LEN:
+        raise ValueError(
+            f"shard truncated: expected at least {HEADER_LEN} bytes, got {len(blob)}"
+        )
     if blob[:4] != MAGIC_PROTECT:
         raise ValueError("not a shard-core protect shard")
     ver, k, n, idx = blob[4], blob[5], blob[6], blob[7]
+    if ver not in SUPPORTED_VERSIONS:
+        raise ValueError(f"unsupported shard-core format version {ver}")
+    if not (2 <= k <= n <= 255):
+        raise ValueError(
+            f"shard header is invalid: require 2 <= threshold <= shares <= 255, "
+            f"got threshold={k} shares={n}"
+        )
+    if not (1 <= idx <= n):
+        raise ValueError(
+            f"shard header is invalid: index {idx} is out of range for {n} shares"
+        )
     off = 8
     nonce = blob[off : off + 12]; off += 12
     tag = blob[off : off + 16]; off += 16
     sa = blob[off : off + 16]; off += 16
     sb = blob[off : off + 16]; off += 16
     (ctlen,) = struct.unpack(">I", blob[off : off + 4]); off += 4
-    ct = blob[off : off + ctlen]
+    present = len(blob) - HEADER_LEN
+    if present < ctlen:
+        raise ValueError(
+            f"shard truncated: header claims {ctlen} ciphertext bytes, {present} present"
+        )
+    if present > ctlen:
+        raise ValueError("shard has trailing garbage")
+    ct = blob[off:]
     return {
         "version": ver, "threshold": k, "shares": n, "index": idx,
         "nonce": nonce, "tag": tag, "share_a": sa, "share_b": sb, "ciphertext": ct,
     }
 
 
+# Fields every shard of one protect run must agree on. The index is the only
+# thing that legitimately varies.
+_SHARED_FIELDS = ("version", "threshold", "shares", "nonce", "tag", "ciphertext")
+
+
 def recover(shard_b64_list: list[str]) -> bytes:
-    """Reconstruct the secret from >= threshold shards."""
-    parsed = [parse_shard(s) for s in shard_b64_list]
-    if not parsed:
+    """Reconstruct the secret from >= threshold shards.
+
+    All shards must come from the same ``protect`` run. Mixing runs is checked
+    up front and reported precisely, rather than surfacing later as an opaque
+    MAC failure that reads like corruption.
+    """
+    if not shard_b64_list:
         raise ValueError("no shards provided")
-    threshold = parsed[0]["threshold"]
+    parsed = [parse_shard(s) for s in shard_b64_list]
+    ref = parsed[0]
+    for position, p in enumerate(parsed[1:], start=2):
+        for field in _SHARED_FIELDS:
+            if p[field] != ref[field]:
+                raise ValueError(
+                    f"shard {position} (index={p['index']}) does not match shard 1: "
+                    f"differing {field} — shards are from different protect runs"
+                )
+    threshold = ref["threshold"]
     # Deduplicate by share index; all shards carry the same ciphertext.
     by_index: dict[int, dict] = {}
     for p in parsed:
         by_index[p["index"]] = p
     if len(by_index) < threshold:
+        counts = Counter(p["index"] for p in parsed)
+        duplicates = sorted(p["index"] for p in parsed if counts[p["index"]] > 1)
+        detail = (
+            f" (duplicate indices supplied: {', '.join(str(i) for i in duplicates)})"
+            if duplicates else ""
+        )
         raise ValueError(
-            f"need >= {threshold} distinct shards, got {len(by_index)}"
+            f"need >= {threshold} distinct shards, got {len(by_index)}{detail}"
         )
     chosen = list(by_index.values())[:threshold]
     key = _combine_key([(p["index"], p["share_a"], p["share_b"]) for p in chosen])
     ref = parsed[0]
-    return _aead_decrypt(key, ref["nonce"], ref["tag"], ref["ciphertext"])
+    return _aead_decrypt(
+        key, ref["nonce"], ref["tag"], ref["ciphertext"],
+        _shard_aad(ref["version"], ref["threshold"], ref["shares"]),
+    )
+
+
+def _shard_aad(version: int, threshold: int, shares: int) -> bytes:
+    """AAD for a parsed shard: v1 headers were unauthenticated, v2 are bound."""
+    if version == 1:
+        return b""
+    if version == 2:
+        return _protect_aad(version, threshold, shares)
+    raise ValueError(f"unsupported shard-core format version {version}")
 
 
 # --------------------------------------------------------------------------- #
@@ -158,36 +294,69 @@ def encrypt(
 ) -> str:
     salt = get_random_bytes(16)
     key = _derive(passphrase, salt, n_log2, r, p)
-    nonce, tag, ct = _aead_encrypt(key, secret)
+    aad = _encrypt_aad(FORMAT_VERSION, KDF_SCRYPT, n_log2, r, p, salt)
+    nonce, tag, ct = _aead_encrypt(key, secret, aad)
     header = (
         MAGIC_ENCRYPT + bytes([FORMAT_VERSION, KDF_SCRYPT, n_log2, r, p]) + salt + nonce + tag
     )
     return base64.b64encode(header + ct).decode("ascii")
 
 
+_LABEL_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
+MAX_LABEL_LEN = 64
+
+
+def _sanitize_label(raw: str) -> str:
+    """Reduce a label to one safe filename component (may return ``""``).
+
+    Labels reach the filesystem as ``share-<label>.txt``, so a label must not
+    be able to steer the write anywhere: path separators and every other
+    unexpected character become ``_``, and ``..`` is collapsed so no traversal
+    survives anywhere in the name.
+    """
+    safe = _LABEL_UNSAFE.sub("_", raw)
+    while ".." in safe:
+        safe = safe.replace("..", ".")
+    return safe.lstrip(".-")[:MAX_LABEL_LEN]
+
+
 def normalize_labels(labels, count: int) -> list[str]:
-    """Return exactly ``count`` share labels, robustly (never fails):
+    """Return exactly ``count`` safe share labels, robustly (never fails):
 
     - no labels        -> numbered ``01``..``0N``
     - a single label   -> ``label-1``..``label-N``
     - fewer than count -> keep the given ones, pad the rest with numbers
     - more than count  -> truncate to ``count``
+
+    Every label is sanitized first, so derived labels (``label-1``) are clean
+    too. A label with nothing safe left in it falls back to its number.
     """
-    cleaned = [str(x).strip() for x in (labels or []) if str(x).strip()]
-    if not cleaned:
+    cleaned = [_sanitize_label(str(x).strip()) for x in (labels or []) if str(x).strip()]
+    if not any(cleaned):
         return [f"{i:02d}" for i in range(1, count + 1)]
     if len(cleaned) == 1 and count > 1:
         return [f"{cleaned[0]}-{i}" for i in range(1, count + 1)]
+    cleaned = [c or f"{i:02d}" for i, c in enumerate(cleaned, start=1)]
     if len(cleaned) >= count:
         return cleaned[:count]
     return cleaned + [f"{i:02d}" for i in range(len(cleaned) + 1, count + 1)]
 
 
 def decrypt(blob_b64: str, passphrase: bytes) -> bytes:
-    blob = base64.b64decode(blob_b64)
+    try:
+        blob = base64.b64decode(blob_b64, validate=True)
+    except binascii.Error as exc:
+        raise ValueError("encrypted blob is not valid base64") from exc
+    if len(blob) < ENC_HEADER_LEN:
+        raise ValueError(
+            f"encrypted blob truncated: expected at least {ENC_HEADER_LEN} bytes, "
+            f"got {len(blob)}"
+        )
     if blob[:4] != MAGIC_ENCRYPT:
         raise ValueError("not a shard-core encrypt blob")
-    _ver, kdf, n_log2, r, p = blob[4], blob[5], blob[6], blob[7], blob[8]
+    ver, kdf, n_log2, r, p = blob[4], blob[5], blob[6], blob[7], blob[8]
+    if ver not in SUPPORTED_VERSIONS:
+        raise ValueError(f"unsupported shard-core format version {ver}")
     if kdf != KDF_SCRYPT:
         raise ValueError(f"unsupported KDF id {kdf}")
     off = 9
@@ -195,5 +364,7 @@ def decrypt(blob_b64: str, passphrase: bytes) -> bytes:
     nonce = blob[off : off + 12]; off += 12
     tag = blob[off : off + 16]; off += 16
     ct = blob[off:]
+    # v1 headers were carried but unauthenticated; v2 binds them as AAD.
+    aad = b"" if ver == 1 else _encrypt_aad(ver, kdf, n_log2, r, p, salt)
     key = _derive(passphrase, salt, n_log2, r, p)
-    return _aead_decrypt(key, nonce, tag, ct)
+    return _aead_decrypt(key, nonce, tag, ct, aad)
