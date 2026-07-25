@@ -75,7 +75,22 @@ Requires Python 3.9 or newer.
 
 ### Quick install
 
-Use this path for evaluation and normal use on a connected host:
+Install the stable release from PyPI:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install 'shard-core==0.2.0'
+shard-core --version
+```
+
+To include optional SLIP-39 support:
+
+```bash
+python -m pip install 'shard-core[slip39]==0.2.0'
+```
+
+To install the same immutable release from source instead:
 
 ```bash
 git clone --branch v0.2.0 --depth 1 \
@@ -85,12 +100,6 @@ python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install .
 shard-core --version
-```
-
-This path may obtain dependencies from a package index. To add SLIP-39:
-
-```bash
-python -m pip install '.[slip39]'
 ```
 
 For development:
