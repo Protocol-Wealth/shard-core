@@ -30,48 +30,42 @@ Or run without installing:
 PYTHONPATH=src python3 -m shard_core --help
 ```
 
-Requires Python 3.9+. `./install.sh` is deliberately disabled: the source tree
-cannot promote or install a ceremony candidate.
+Requires Python 3.9+. `./install.sh` is a convenience dispatcher for exactly
+one offline bundle already present under `dist/`; it never installs from a
+package index.
 
-### Ceremony / air-gapped host
+### Offline / air-gapped bundle
 
-Do not install from a package index. The only ceremony candidate builder is
-`scripts/build-offline-bundle.py`. The retired
-`scripts/build-offline-bundle.sh` fails closed and must not be used as release
-evidence.
+The canonical bundle builder is `scripts/build-offline-bundle.py`. The retired
+host-native `scripts/build-offline-bundle.sh` fails closed because it does not
+provide the isolated build boundary.
 
-The Python builder must run as a dedicated, exclusive, non-root ceremony
-account on reviewed Linux x86_64 infrastructure with exactly Python 3.11 and
-local rootless Podman. Before invocation, an administrator must provision:
+The Python builder runs under a dedicated non-root account on Linux x86_64 with
+exactly Python 3.11 and local rootless Podman. Its inputs include:
 
-- Root-controlled, digest-approved Git, Python, Podman, OCI runtime, and conmon
-  executables.
-- A root-controlled empty OCI hooks directory.
-- A root-controlled Podman configuration root containing exactly
-  `containers/containers.conf`, `containers/storage.conf`,
-  `containers/registries.conf`, and an empty `containers/mounts.conf`.
-- Ceremony-owned mode-`0700` Podman data, runtime, and output directories.
-- A locally present Linux/amd64 build image pinned by approved repository,
-  platform-manifest, and image-config digests.
-- Independently reviewed runtime and build wheelhouses matching the committed
-  hash locks.
+- Digest-pinned Git, Python, Podman, OCI runtime, and conmon executables.
+- A fixed Podman configuration tree and empty OCI hooks directory.
+- Explicit private Podman storage and runtime roots.
+- A Linux/amd64 image pinned by repository, platform-manifest, and config
+  digests.
+- Runtime and build wheelhouses matching committed hash locks.
 
 Invoke `python3.11 scripts/build-offline-bundle.py --help` for the complete
-required argument list. A representative invocation begins:
+argument list. A representative invocation begins:
 
 ```bash
 /usr/bin/python3.11 scripts/build-offline-bundle.py \
-  --expected-source-commit "$APPROVED_COMMIT" \
+  --expected-source-commit "$SOURCE_COMMIT" \
   --git-path /usr/bin/git \
-  --expected-git-sha256 "$APPROVED_GIT_SHA256" \
+  --expected-git-sha256 "$GIT_SHA256" \
   --python-path /usr/bin/python3.11 \
-  --expected-python-sha256 "$APPROVED_PYTHON_SHA256" \
+  --expected-python-sha256 "$PYTHON_SHA256" \
   --podman-path /usr/bin/podman \
-  --expected-podman-sha256 "$APPROVED_PODMAN_SHA256" \
-  --expected-oci-runtime-sha256 "$APPROVED_RUNTIME_SHA256" \
-  --expected-conmon-sha256 "$APPROVED_CONMON_SHA256" \
+  --expected-podman-sha256 "$PODMAN_SHA256" \
+  --expected-oci-runtime-sha256 "$RUNTIME_SHA256" \
+  --expected-conmon-sha256 "$CONMON_SHA256" \
   --podman-config-root /etc/shard-core/podman \
-  --expected-podman-config-sha256 "$APPROVED_CONFIG_SHA256" \
+  --expected-podman-config-sha256 "$CONFIG_SHA256" \
   --podman-data-root /var/lib/shard-core-podman \
   --podman-runtime-root /run/user/"$CEREMONY_UID"/shard-core \
   --empty-hooks-dir /etc/shard-core/empty-hooks \
@@ -80,16 +74,33 @@ required argument list. A representative invocation begins:
   --runtime-wheelhouse /reviewed/runtime-wheels \
   --build-wheelhouse /reviewed/build-wheels \
   --output-parent /controlled/candidates \
-  ...remaining approved image and lock digest arguments...
+  ...remaining pinned image and lock digest arguments...
 ```
 
 The builder uses a minimal Podman environment, explicit configuration and
 storage roots, `--network=none`, a read-only root filesystem and inputs, and
-two byte-compared builds. It emits only
-`UNAPPROVED-CANDIDATE-<version>-.../`, with no installer. It is not a
-production ceremony bundle. Independent review, producer authentication, a
-real Podman smoke test against the exact commit, and a separately controlled
-authenticated promotion step remain mandatory.
+two byte-compared builds. It emits:
+
+```text
+shard-core-<version>-offline-cp39-abi3-manylinux_2_17_x86_64/
+```
+
+The output is a full, installable `APPROVED-CANDIDATE` with `SHA256SUMS`,
+`VERIFY.md`, provenance, SBOM, wheels, hash-locked requirements, and
+`install-offline.sh`. Approved candidate is an automated build status, not a
+security audit or warranty.
+
+Transfer the complete directory. On the offline host:
+
+```bash
+cd shard-core-*-offline-cp39-abi3-manylinux_2_17_x86_64
+sha256sum -c SHA256SUMS
+./install-offline.sh /controlled/path/shard-core-venv
+/controlled/path/shard-core-venv/bin/shard-core --version
+```
+
+The installer repeats the inventory and digest checks and invokes pip only with
+`--no-index`, the bundled wheelhouse, and `--require-hashes`.
 
 ## Guided mode
 
@@ -113,7 +124,8 @@ So you can give one share to each holder (and one to a storage-only custodian), 
 | `protect` / `recover` | Encrypt, then Shamir-split the key into `n` shards (`k` reconstruct) |
 | `info` | Show a shard's header (threshold/index) without reconstructing |
 | `verify-set` | Authenticate every threshold-sized combination in a SHRD set |
-| `fordefi split` / `fordefi combine` | Guided flow for a Fordefi recovery phrase |
+| `fordefi encrypt` / `fordefi decrypt` | Direct SHEN backup and recovery for a Fordefi phrase |
+| `fordefi split` / `fordefi combine` | Threshold-share flow for a Fordefi phrase |
 | `slip39 split` / `slip39 combine` | SLIP-39 word-list shares (needs the `slip39` extra) |
 | `generate-key` | Generate a random wrapping credential into a private file |
 
@@ -149,6 +161,21 @@ shard-core decrypt -i secret.enc -o secret.txt
 ```
 
 ### Fordefi recovery-phrase mode
+
+For a direct encrypted Version 2 backup, enter the phrase and wrapping
+passphrase through hidden prompts:
+
+```bash
+shard-core fordefi encrypt --output protocol-phrase.shen
+shard-core fordefi decrypt \
+  --input protocol-phrase.shen \
+  --output protocol-phrase.txt
+```
+
+Encryption confirms both the Fordefi phrase and wrapping passphrase. Decryption
+requires an explicit plaintext output (`--output` or deliberate `--stdout`) and
+revalidates the recovered phrase. Both commands use the existing SHEN v2 format;
+they do not change cryptographic composition or wire bytes.
 
 Split a Fordefi recovery phrase into shares (numbered by default):
 

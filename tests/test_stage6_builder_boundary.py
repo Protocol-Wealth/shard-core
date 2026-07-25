@@ -4,6 +4,7 @@ import importlib.util
 import stat
 import subprocess
 import sys
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -88,6 +89,43 @@ class Stage6BuilderBoundaryTests(unittest.TestCase):
             expected_image_config_digest=self.CONFIG_DIGEST,
             description="test image",
         )
+
+    @unittest.skipUnless(
+        sys.version_info[:2] == (3, 11),
+        "Stage 6 builder requires exact Python 3.11",
+    )
+    def test_support_files_are_captured_from_both_archives(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_one = root / "one"
+            source_two = root / "two"
+            for source in (source_one, source_two):
+                target = source / "release" / "VERIFY.md"
+                target.parent.mkdir(parents=True)
+                target.write_bytes(b"reviewed bytes\n")
+
+            verified = self.builder._verified_archived_files(
+                source_one,
+                source_two,
+                ("release/VERIFY.md",),
+            )
+            self.assertEqual(
+                verified,
+                {"release/VERIFY.md": b"reviewed bytes\n"},
+            )
+
+            (source_two / "release" / "VERIFY.md").write_bytes(
+                b"changed bytes\n"
+            )
+            with self.assertRaisesRegex(
+                self.builder.ReleaseInputError,
+                "independent source files differ",
+            ):
+                self.builder._verified_archived_files(
+                    source_one,
+                    source_two,
+                    ("release/VERIFY.md",),
+                )
 
     @unittest.skipUnless(
         sys.version_info[:2] == (3, 11),
@@ -537,44 +575,50 @@ class Stage6BuilderBoundaryTests(unittest.TestCase):
             self.INDEX_DIGEST,
         )
 
-    def test_legacy_builder_and_source_installer_fail_closed(self):
-        for path, expected in (
-            (
-                ROOT / "scripts/build-offline-bundle.sh",
-                "host-native offline bundle builder is permanently disabled",
-            ),
-            (
-                ROOT / "install.sh",
-                "source-tree ceremony installer is disabled",
-            ),
-        ):
-            result = subprocess.run(
-                ["bash", str(path)],
-                capture_output=True,
-                check=False,
-                text=True,
-            )
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn(expected, result.stderr)
+    def test_legacy_builder_fails_closed(self):
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/build-offline-bundle.sh")],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "host-native offline bundle builder is permanently disabled",
+            result.stderr,
+        )
+
+    def test_source_installer_requires_one_built_bundle(self):
+        result = subprocess.run(
+            ["bash", str(ROOT / "install.sh")],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no offline bundle found", result.stderr)
 
     def test_readme_names_only_python_builder_as_canonical(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        ceremony = readme.split(
-            "### Ceremony / air-gapped host",
+        offline = readme.split(
+            "### Offline / air-gapped bundle",
             1,
         )[1].split("## Guided mode", 1)[0]
         self.assertIn(
-            "The only ceremony candidate builder is",
-            ceremony,
+            "The canonical bundle builder is",
+            offline,
         )
         self.assertIn(
             "python3.11 scripts/build-offline-bundle.py",
-            ceremony,
+            offline,
         )
-        self.assertIn("UNAPPROVED-CANDIDATE", ceremony)
+        self.assertIn("APPROVED-CANDIDATE", offline)
+        self.assertIn("install-offline.sh", offline)
+        self.assertNotIn("UNAPPROVED-CANDIDATE", offline)
+        self.assertNotIn("producer authentication", offline.lower())
         self.assertNotIn(
             "bash scripts/build-offline-bundle.sh\n",
-            ceremony,
+            offline,
         )
 
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installed into a manylinux2014 x86_64, CPython 3.9+ ceremony bundle.
+# Installed into a manylinux2014 x86_64, CPython 3.9+ offline bundle.
 set -euo pipefail
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)

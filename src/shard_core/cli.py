@@ -4,7 +4,7 @@ Subcommands:
   encrypt / decrypt   passphrase-based AEAD (one ciphertext blob)
   protect / recover   encrypt + Shamir n-of-m sharding
   info                inspect a shard's header without reconstructing
-  fordefi split/combine   guided wrapper for a Fordefi recovery phrase
+  fordefi encrypt/decrypt/split/combine   Fordefi recovery-phrase workflows
 """
 
 from __future__ import annotations
@@ -337,15 +337,76 @@ def _prompt_fordefi_phrase(args) -> bytes:
     return first
 
 
-def _cmd_fordefi_split(args) -> None:
-    if args.phrase_file:
-        phrase = fordefi_support.read_recovery_phrase_file(
+def _read_fordefi_phrase(args) -> bytes:
+    if getattr(args, "phrase_file", None):
+        return fordefi_support.read_recovery_phrase_file(
             args.phrase_file,
-            allow_nonstandard=getattr(args, "allow_nonstandard_phrase", False),
-            allow_insecure=getattr(args, "allow_insecure_phrase_file", False),
+            allow_nonstandard=getattr(
+                args,
+                "allow_nonstandard_phrase",
+                False,
+            ),
+            allow_insecure=getattr(
+                args,
+                "allow_insecure_phrase_file",
+                False,
+            ),
         )
-    else:
-        phrase = _prompt_fordefi_phrase(args)
+    return _prompt_fordefi_phrase(args)
+
+
+def _cmd_fordefi_encrypt(args) -> None:
+    phrase = _read_fordefi_phrase(args)
+    passphrase = _get_passphrase(args, confirm=True)
+    blob = core.encrypt(
+        phrase,
+        passphrase,
+        n_log2=args.scrypt_n,
+    )
+    if args.output == "-":
+        raise ValueError(
+            "Fordefi encrypted backup output must be a file"
+        )
+    safeio.atomic_write_text(
+        args.output,
+        blob + "\n",
+        force=args.force,
+    )
+    print(f"wrote encrypted Fordefi recovery phrase to {args.output}")
+
+
+def _cmd_fordefi_decrypt(args) -> None:
+    passphrase = _get_passphrase(args, confirm=False)
+    try:
+        blob = _read_input(args.input).decode("ascii").strip()
+        recovered = core.decrypt(
+            blob,
+            passphrase,
+        )
+    except (UnicodeDecodeError, ValueError):
+        sys.exit(
+            "error: decryption failed "
+            "(wrong passphrase or corrupted data)"
+        )
+    try:
+        phrase = fordefi_support.canonicalize_recovery_phrase(
+            recovered,
+            allow_nonstandard=getattr(
+                args,
+                "allow_nonstandard_phrase",
+                False,
+            ),
+        )
+    except ValueError as exc:
+        sys.exit(
+            "error: decrypted data is not a valid Fordefi "
+            f"recovery phrase: {exc}"
+        )
+    _emit_secret(args, phrase)
+
+
+def _cmd_fordefi_split(args) -> None:
+    phrase = _read_fordefi_phrase(args)
     labels = args.labels.split(",") if args.labels else [f"{i:02d}" for i in range(1, args.shares + 1)]
     if args.slip39:
         if getattr(args, "manifest", None):
@@ -538,8 +599,17 @@ def _cmd_generate_key(args) -> None:
 # parser
 # --------------------------------------------------------------------------- #
 def _add_passphrase_opts(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--passphrase-env", metavar="VAR", help="read passphrase from an env var")
-    p.add_argument("--passphrase-file", metavar="FILE", help="read passphrase from a file")
+    source = p.add_mutually_exclusive_group()
+    source.add_argument(
+        "--passphrase-env",
+        metavar="VAR",
+        help="read passphrase from an env var",
+    )
+    source.add_argument(
+        "--passphrase-file",
+        metavar="FILE",
+        help="read passphrase from a file",
+    )
     p.add_argument(
         "--allow-insecure-passphrase-file",
         action="store_true",
@@ -564,6 +634,33 @@ def _add_secret_output_args(parser: argparse.ArgumentParser) -> None:
         "--force",
         action="store_true",
         help="replace an existing regular output file; symlinks are never followed",
+    )
+
+
+def _add_fordefi_phrase_input_args(
+    parser: argparse.ArgumentParser,
+) -> None:
+    parser.add_argument(
+        "--phrase-file",
+        help=(
+            "controlled automation file; hidden interactive entry "
+            "is preferred"
+        ),
+    )
+    parser.add_argument(
+        "--allow-nonstandard-phrase",
+        action="store_true",
+        help=(
+            "allow a non-12-word or non-lowercase ASCII "
+            "Fordefi phrase"
+        ),
+    )
+    parser.add_argument(
+        "--allow-insecure-phrase-file",
+        action="store_true",
+        help=(
+            "allow a symlink or group/world-accessible phrase file"
+        ),
     )
 
 
@@ -636,23 +733,64 @@ def build_parser() -> argparse.ArgumentParser:
     fd = sub.add_parser("fordefi", help="guided Fordefi recovery-phrase workflow")
     fdsub = fd.add_subparsers(dest="fordefi_command", required=True)
 
+    fde = fdsub.add_parser(
+        "encrypt",
+        help="create a passphrase-encrypted SHEN backup of a Fordefi phrase",
+    )
+    _add_fordefi_phrase_input_args(fde)
+    fde.add_argument(
+        "-o",
+        "--output",
+        required=True,
+        metavar="FILE",
+        help="write the encrypted SHEN backup to FILE",
+    )
+    fde.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "replace an existing regular output file; "
+            "symlinks are never followed"
+        ),
+    )
+    fde.add_argument(
+        "--scrypt-n",
+        type=int,
+        default=core.DEFAULT_SCRYPT_N_LOG2,
+        dest="scrypt_n",
+        metavar="LOG2",
+        help="scrypt cost as log2(N) (default 17)",
+    )
+    _add_passphrase_opts(fde)
+    fde.set_defaults(func=_cmd_fordefi_encrypt)
+
+    fdd = fdsub.add_parser(
+        "decrypt",
+        help="recover a Fordefi phrase from an encrypted SHEN backup",
+    )
+    fdd.add_argument(
+        "-i",
+        "--input",
+        required=True,
+        metavar="FILE",
+        help="read the encrypted SHEN backup from FILE",
+    )
+    fdd.add_argument(
+        "--allow-nonstandard-phrase",
+        action="store_true",
+        help=(
+            "allow a non-12-word or non-lowercase ASCII "
+            "Fordefi phrase"
+        ),
+    )
+    _add_secret_output_args(fdd)
+    _add_passphrase_opts(fdd)
+    fdd.set_defaults(func=_cmd_fordefi_decrypt)
+
     fds = fdsub.add_parser("split", help="shard a Fordefi recovery phrase")
     fds.add_argument("-t", "--threshold", type=int, default=2, help="shards needed (default 2)")
     fds.add_argument("-n", "--shares", type=int, default=3, help="total shards (default 3)")
-    fds.add_argument(
-        "--phrase-file",
-        help="controlled automation file; hidden interactive entry is preferred",
-    )
-    fds.add_argument(
-        "--allow-nonstandard-phrase",
-        action="store_true",
-        help="allow a non-12-word or non-lowercase ASCII Fordefi phrase",
-    )
-    fds.add_argument(
-        "--allow-insecure-phrase-file",
-        action="store_true",
-        help="allow a symlink or group/world-accessible phrase file",
-    )
+    _add_fordefi_phrase_input_args(fds)
     fds.add_argument("--labels", help="comma-separated labels (default: numbered 01..0n)")
     fds.add_argument("-o", "--out-dir", default="fordefi-shards", dest="out_dir", help="output directory")
     fds.add_argument(

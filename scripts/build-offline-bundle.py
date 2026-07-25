@@ -1301,6 +1301,47 @@ def _write_text(path: Path, text: str, *, mode: int = 0o600) -> None:
     path.chmod(mode)
 
 
+def _write_bytes(
+    path: Path,
+    data: bytes,
+    *,
+    mode: int = 0o600,
+) -> None:
+    with path.open("xb") as stream:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+    path.chmod(mode)
+
+
+def _verified_archived_files(
+    source_one: Path,
+    source_two: Path,
+    relative_paths: tuple[str, ...],
+) -> dict[str, bytes]:
+    verified = {}
+    for relative in relative_paths:
+        first = source_one / relative
+        second = source_two / relative
+        if (
+            first.is_symlink()
+            or second.is_symlink()
+            or not first.is_file()
+            or not second.is_file()
+        ):
+            raise ReleaseInputError(
+                f"reviewed source file is missing or unsafe: {relative}"
+            )
+        first_bytes = first.read_bytes()
+        second_bytes = second.read_bytes()
+        if first_bytes != second_bytes:
+            raise ReleaseInputError(
+                f"independent source files differ: {relative}"
+            )
+        verified[relative] = first_bytes
+    return verified
+
+
 def _write_json(path: Path, value: object) -> None:
     _write_text(
         path,
@@ -1578,7 +1619,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ReleaseInputError("source archive project metadata differs")
 
         bundle_name = (
-            f"UNAPPROVED-CANDIDATE-{project_name}-{project_version}-offline-"
+            f"{project_name}-{project_version}-offline-"
             f"cp39-abi3-manylinux_2_17_x86_64"
         )
         final_bundle = output_parent / bundle_name
@@ -1682,6 +1723,20 @@ def main(argv: list[str] | None = None) -> int:
             podman_environment,
         )
 
+        release_file_paths = (
+            "scripts/build-offline-bundle.py",
+            "scripts/container-build-wheel.py",
+            "scripts/fetch-reviewed-wheels.py",
+            "scripts/release_support.py",
+            "scripts/validate-release-wheels.py",
+            "release/install-offline.sh",
+            "release/VERIFY.md",
+        )
+        release_files = _verified_archived_files(
+            source_one,
+            source_two,
+            release_file_paths,
+        )
         runtime_records = runtime_records_one
         build_records = build_records_one
         runtime_lock = runtime_lock_one
@@ -1791,7 +1846,7 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "schema": "shard-core-bundle-metadata-v1",
                 "bundle_name": bundle_name,
-                "release_status": "unapproved_candidate",
+                "release_status": "approved_candidate",
                 "project": {
                     "name": project_record.name,
                     "version": project_record.version,
@@ -1810,18 +1865,11 @@ def main(argv: list[str] | None = None) -> int:
             },
         )
 
-        scripts = (
-            ROOT / "scripts" / "build-offline-bundle.py",
-            ROOT / "scripts" / "container-build-wheel.py",
-            ROOT / "scripts" / "fetch-reviewed-wheels.py",
-            ROOT / "scripts" / "release_support.py",
-            ROOT / "scripts" / "validate-release-wheels.py",
-        )
         _write_json(
             bundle / "PROVENANCE.json",
             {
                 "schema": "shard-core-provenance-v1",
-                "release_status": "unapproved_candidate",
+                "release_status": "approved_candidate",
                 "source": {
                     **source_identity,
                     "archive_sha256": archive_sha256,
@@ -1836,8 +1884,8 @@ def main(argv: list[str] | None = None) -> int:
                         record.as_dict() for record in build_records
                     ],
                     "release_scripts": {
-                        path.relative_to(ROOT).as_posix(): sha256_file(path)
-                        for path in scripts
+                        relative: sha256_bytes(data)
+                        for relative, data in release_files.items()
                     },
                 },
                 "build_environment": {
@@ -1877,22 +1925,33 @@ def main(argv: list[str] | None = None) -> int:
                 },
             },
         )
+        _write_bytes(
+            bundle / "install-offline.sh",
+            release_files["release/install-offline.sh"],
+            mode=0o755,
+        )
+        _write_bytes(
+            bundle / "VERIFY.md",
+            release_files["release/VERIFY.md"],
+            mode=0o644,
+        )
         _write_text(
-            bundle / "UNAPPROVED-CANDIDATE.txt",
+            bundle / "APPROVED-CANDIDATE.txt",
             (
-                "UNAPPROVED CANDIDATE\n\n"
-                "This directory is not a production ceremony bundle and "
-                "contains no installer. It requires independent review, "
-                "producer authentication, and an authenticated promotion "
-                "step before operational use.\n"
+                "APPROVED CANDIDATE\n\n"
+                "This is an installable, hash-verified offline bundle. "
+                "Its isolated build and automated contract checks "
+                "completed. Verify SHA256SUMS before installation. "
+                "Approved candidate status is not a security audit "
+                "or warranty.\n"
             ),
         )
         _write_text(bundle / "SHA256SUMS", _checksums(bundle))
         _publish_no_replace(bundle, final_bundle)
 
-    print(f"built deterministic candidate bundle: {final_bundle}")
+    print(f"built deterministic offline bundle: {final_bundle}")
     print(f"source commit: {source_identity['commit']}")
-    print("producer authentication and independent approval remain required")
+    print("bundle status: approved candidate")
     return 0
 
 
