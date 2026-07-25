@@ -1,20 +1,37 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "shard-core"
-version = "0.2.0rc1"
-description = "Local, offline encryption + Shamir n-of-m secret sharing. No network, ever."
+version = "0.2.0"
+description = "Authenticated local encryption and Shamir threshold recovery with offline workflows."
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{ name = "Protocol Wealth LLC" }]
-license = { text = "Apache-2.0 OR MIT-0" }
-keywords = ["shamir", "secret-sharing", "encryption", "aead", "backup", "seed-phrase"]
+license = "Apache-2.0 OR MIT-0"
+license-files = ["LICENSE", "LICENSE-MIT-0"]
+keywords = [
+  "shamir",
+  "secret-sharing",
+  "encryption",
+  "aead",
+  "disaster-recovery",
+  "fordefi",
+  "slip39",
+]
 classifiers = [
+  "Development Status :: 4 - Beta",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Security :: Cryptography",
   "Environment :: Console",
+  "Operating System :: OS Independent",
 ]
 dependencies = ["pycryptodome>=3.20"]
 
@@ -36,7 +53,12 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Protocol-Wealth/shard-core"
+Homepage = "https://protocolwealthllc.com/opensource/encryption"
+Documentation = "https://protocolwealthllc.com/opensource/encryption"
+Repository = "https://github.com/Protocol-Wealth/shard-core"
+Issues = "https://github.com/Protocol-Wealth/shard-core/issues"
+Changelog = "https://github.com/Protocol-Wealth/shard-core/blob/main/CHANGELOG.md"
+Security = "https://github.com/Protocol-Wealth/shard-core/security/policy"
 
 [project.scripts]
 shard-core = "shard_core.cli:main"

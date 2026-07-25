@@ -138,7 +138,7 @@ creation. Do not revive it as a parallel release path.
 The neutral candidate directory is named like:
 
 ```text
-shard-core-0.2.0rc1-offline-cp39-abi3-manylinux_2_17_x86_64
+shard-core-0.2.0-offline-cp39-abi3-manylinux_2_17_x86_64
 ```
 
 On the offline host:

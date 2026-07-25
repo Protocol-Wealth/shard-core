@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use shard-core, cite the software and its release."
+title: "shard-core"
+type: software
+authors:
+  - name: "Protocol Wealth LLC"
+repository-code: "https://github.com/Protocol-Wealth/shard-core"
+url: "https://protocolwealthllc.com/opensource/encryption"
+version: "0.2.0"
+date-released: "2026-07-25"
+license: "Apache-2.0 OR MIT-0"
