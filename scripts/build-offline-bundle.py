@@ -43,7 +43,19 @@ from release_support import (
 ROOT = Path(__file__).resolve().parents[1]
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
-IMAGE = re.compile(r"^[^@\s]+@sha256:(?P<digest>[0-9a-f]{64})$")
+REGISTRY_COMPONENT = r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
+REGISTRY_HOST = (
+    rf"(?:localhost|{REGISTRY_COMPONENT}(?:\.{REGISTRY_COMPONENT})+)"
+)
+REPOSITORY_COMPONENT = (
+    r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*"
+)
+IMAGE = re.compile(
+    rf"^(?P<repository>{REGISTRY_HOST}(?::[0-9]{{1,5}})?"
+    rf"/{REPOSITORY_COMPONENT}"
+    rf"(?:/{REPOSITORY_COMPONENT})*)"
+    rf"@sha256:(?P<digest>[0-9a-f]{{64}})$"
+)
 RUNTIME_LOCK_RELATIVE = Path(
     "release/locks/runtime-cp39-abi3-manylinux_2_17_x86_64.txt"
 )
@@ -485,6 +497,124 @@ def _inspected_digest(value: object, *, description: str) -> str:
     return digest
 
 
+def _canonical_image_match(value: str) -> re.Match[str] | None:
+    match = IMAGE.fullmatch(value)
+    if match is None:
+        return None
+    registry = match.group("repository").split("/", 1)[0]
+    if ":" in registry:
+        port = int(registry.rsplit(":", 1)[1])
+        if port < 1 or port > 65535:
+            return None
+    return match
+
+
+def _validate_image_inspection(
+    image_record: object,
+    image_reference: str,
+    *,
+    expected_repository_digest: str,
+    expected_platform_manifest_digest: str,
+    expected_image_config_digest: str,
+    description: str,
+) -> dict[str, object]:
+    match = _canonical_image_match(image_reference)
+    if match is None:
+        raise ReleaseInputError(
+            f"{description} reference is not a canonical digest reference"
+        )
+    if not isinstance(image_record, dict):
+        raise ReleaseInputError(
+            f"{description} inspection record is not an object"
+        )
+
+    raw_repo_digests = image_record.get("RepoDigests")
+    if (
+        not isinstance(raw_repo_digests, (list, tuple))
+        or any(not isinstance(value, str) for value in raw_repo_digests)
+    ):
+        raise ReleaseInputError(
+            f"{description} repository digests are invalid"
+        )
+    repository_digests = tuple(raw_repo_digests)
+    if (
+        len(set(repository_digests)) != len(repository_digests)
+        or any(
+            _canonical_image_match(value) is None
+            for value in repository_digests
+        )
+    ):
+        raise ReleaseInputError(
+            f"{description} repository digests are invalid"
+        )
+    repository = match.group("repository")
+    required_references = {
+        f"{repository}@sha256:{expected_repository_digest}",
+        f"{repository}@sha256:{expected_platform_manifest_digest}",
+    }
+    if not required_references.issubset(repository_digests):
+        raise ReleaseInputError(
+            f"{description} does not carry both approved repository "
+            "and platform digest references"
+        )
+
+    reported_digest = _inspected_digest(
+        image_record.get("Digest"),
+        description=f"{description} reported digest",
+    )
+    if reported_digest not in {
+        expected_repository_digest,
+        expected_platform_manifest_digest,
+    }:
+        raise ReleaseInputError(
+            f"{description} reported digest is not approved"
+        )
+
+    image_config = _inspected_digest(
+        image_record.get("Id") or image_record.get("ID"),
+        description=f"{description} image-config digest",
+    )
+    if image_config != expected_image_config_digest:
+        raise ReleaseInputError(
+            f"{description} image-config digest is not approved"
+        )
+
+    image_os = image_record.get("Os")
+    image_architecture = image_record.get("Architecture")
+    if image_os != "linux" or image_architecture != "amd64":
+        raise ReleaseInputError(
+            f"{description} must resolve to Linux amd64"
+        )
+
+    return {
+        "repository": repository,
+        "repository_digests": list(repository_digests),
+        "reported_digest": reported_digest,
+        "image_config_digest": image_config,
+        "image_os": image_os,
+        "image_architecture": image_architecture,
+    }
+
+
+def _assert_image_inspection_identity_unchanged(
+    build_environment: dict[str, object],
+    current_inspection: dict[str, object],
+) -> None:
+    if (
+        current_inspection["reported_digest"]
+        != build_environment["observed_image_digest"]
+    ):
+        raise ReleaseInputError(
+            "build image reported digest changed during ceremony"
+        )
+    if set(current_inspection["repository_digests"]) != set(
+        build_environment["repository_digests"]
+    ):
+        raise ReleaseInputError(
+            "build image repository digests changed during ceremony"
+        )
+
+
 def _approved_hooks_directory(path: Path) -> Path:
     hooks = require_real_directory(path, description="empty OCI hooks directory")
     if not hooks.is_absolute() or hooks.resolve(strict=True) != hooks:
@@ -567,7 +697,7 @@ def _inspect_build_environment(
         home=Path(account.pw_dir),
         user=expected_user,
     )
-    match = IMAGE.fullmatch(image)
+    match = _canonical_image_match(image)
     if match is None:
         raise ReleaseInputError(
             "--build-image must be a repository reference pinned by sha256"
@@ -662,39 +792,20 @@ def _inspect_build_environment(
     try:
         inspected = json.loads(completed.stdout)
         image_record = inspected[0]
-        repo_digests = tuple(image_record.get("RepoDigests") or ())
-        image_id = image_record.get("Id") or image_record.get("ID")
-        platform_manifest = _inspected_digest(
-            image_record["Digest"],
-            description="platform-manifest digest",
-        )
-        image_os = image_record["Os"]
-        image_architecture = image_record["Architecture"]
     except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exc:
         raise ReleaseInputError(
             "OCI runtime returned invalid image inspection data"
         ) from exc
-    digest_suffix = f"@sha256:{expected_repository_digest}"
-    if not any(value.endswith(digest_suffix) for value in repo_digests):
-        raise ReleaseInputError(
-            "local OCI image does not carry the approved repository digest"
-        )
-    image_config = _inspected_digest(
-        image_id,
-        description="image-config digest",
+    image_inspection = _validate_image_inspection(
+        image_record,
+        image,
+        expected_repository_digest=expected_repository_digest,
+        expected_platform_manifest_digest=(
+            expected_platform_manifest_digest
+        ),
+        expected_image_config_digest=expected_image_config_digest,
+        description="approved build image",
     )
-    if image_os != "linux" or image_architecture != "amd64":
-        raise ReleaseInputError(
-            "approved build image must resolve to Linux amd64"
-        )
-    if platform_manifest != expected_platform_manifest_digest:
-        raise ReleaseInputError(
-            "resolved platform-manifest digest is not approved"
-        )
-    if image_config != expected_image_config_digest:
-        raise ReleaseInputError(
-            "resolved image-config digest is not approved"
-        )
 
     version = subprocess.run(
         [
@@ -758,12 +869,14 @@ def _inspect_build_environment(
             "mode": "0700",
         },
         "image_reference": image,
+        "image_repository": image_inspection["repository"],
         "repository_digest": expected_repository_digest,
         "platform_manifest_digest": expected_platform_manifest_digest,
         "image_config_digest": expected_image_config_digest,
-        "image_os": image_os,
-        "image_architecture": image_architecture,
-        "repository_digests": list(repo_digests),
+        "observed_image_digest": image_inspection["reported_digest"],
+        "image_os": image_inspection["image_os"],
+        "image_architecture": image_inspection["image_architecture"],
+        "repository_digests": image_inspection["repository_digests"],
     }, environment
 
 
@@ -877,35 +990,28 @@ def _assert_build_environment_unchanged(
     )
     try:
         inspected_image = json.loads(inspected_result.stdout)[0]
-        current_manifest = _inspected_digest(
-            inspected_image["Digest"],
-            description="post-build platform-manifest digest",
-        )
-        current_config = _inspected_digest(
-            inspected_image.get("Id") or inspected_image.get("ID"),
-            description="post-build image-config digest",
-        )
-        current_repo_digests = tuple(
-            inspected_image.get("RepoDigests") or ()
-        )
     except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exc:
         raise ReleaseInputError(
             "post-build image inspection is invalid"
         ) from exc
-    if current_manifest != build_environment["platform_manifest_digest"]:
-        raise ReleaseInputError("build image manifest changed during ceremony")
-    if current_config != build_environment["image_config_digest"]:
-        raise ReleaseInputError("build image config changed during ceremony")
-    repository_suffix = (
-        f"@sha256:{build_environment['repository_digest']}"
+    current_inspection = _validate_image_inspection(
+        inspected_image,
+        image,
+        expected_repository_digest=str(
+            build_environment["repository_digest"]
+        ),
+        expected_platform_manifest_digest=str(
+            build_environment["platform_manifest_digest"]
+        ),
+        expected_image_config_digest=str(
+            build_environment["image_config_digest"]
+        ),
+        description="post-build image",
     )
-    if not any(
-        value.endswith(repository_suffix)
-        for value in current_repo_digests
-    ):
-        raise ReleaseInputError(
-            "build image repository digest changed during ceremony"
-        )
+    _assert_image_inspection_identity_unchanged(
+        build_environment,
+        current_inspection,
+    )
 
 
 def _acquire_ceremony_lock(output_parent: Path) -> int:
@@ -1381,7 +1487,8 @@ def main(argv: list[str] | None = None) -> int:
         raise ReleaseInputError(
             "output parent must be owned by the current user and mode 0700"
         )
-    ceremony_lock_fd = _acquire_ceremony_lock(output_parent)
+    # Retain the descriptor for the process lifetime so the lock stays held.
+    _ceremony_lock_fd = _acquire_ceremony_lock(output_parent)
 
     archive_one = _git_archive(git_path, source_identity["commit"])
     archive_two = _git_archive(git_path, source_identity["commit"])
