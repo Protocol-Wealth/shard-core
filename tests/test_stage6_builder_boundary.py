@@ -32,12 +32,61 @@ def _load_builder():
 
 
 class Stage6BuilderBoundaryTests(unittest.TestCase):
+    IMAGE_REPOSITORY = "docker.io/library/python"
+    INDEX_DIGEST = (
+        "b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba"
+    )
+    PLATFORM_DIGEST = (
+        "28255a3ace7eb4c48bc1b57b90af29e1bc82b4fd6c60614a8e3dce61b87ff941"
+    )
+    CONFIG_DIGEST = (
+        "7e666cfcc7bd4c47b26b7a5ec0116d80e9bc5415ea06c0dc0bd117a50e9fa6c6"
+    )
+
     @classmethod
     def setUpClass(cls):
         cls.builder = (
             _load_builder()
             if sys.version_info[:2] == (3, 11)
             else None
+        )
+
+    def _image_reference(self, repository=None, digest=None):
+        return (
+            f"{repository or self.IMAGE_REPOSITORY}@sha256:"
+            f"{digest or self.INDEX_DIGEST}"
+        )
+
+    def _image_record(
+        self,
+        *,
+        reported_digest=None,
+        repo_digests=None,
+        config_digest=None,
+        image_os="linux",
+        architecture="amd64",
+    ):
+        if repo_digests is None:
+            repo_digests = [
+                self._image_reference(),
+                self._image_reference(digest=self.PLATFORM_DIGEST),
+            ]
+        return {
+            "Digest": f"sha256:{reported_digest or self.INDEX_DIGEST}",
+            "RepoDigests": repo_digests,
+            "Id": config_digest or self.CONFIG_DIGEST,
+            "Os": image_os,
+            "Architecture": architecture,
+        }
+
+    def _validate_image_record(self, record, reference=None):
+        return self.builder._validate_image_inspection(
+            record,
+            reference or self._image_reference(),
+            expected_repository_digest=self.INDEX_DIGEST,
+            expected_platform_manifest_digest=self.PLATFORM_DIGEST,
+            expected_image_config_digest=self.CONFIG_DIGEST,
+            description="test image",
         )
 
     @unittest.skipUnless(
@@ -189,6 +238,304 @@ class Stage6BuilderBoundaryTests(unittest.TestCase):
                 "parent chain must be root-controlled",
             ):
                 self.builder._approved_hooks_directory(hooks)
+
+    @unittest.skipUnless(
+        sys.version_info[:2] == (3, 11),
+        "Stage 6 builder requires exact Python 3.11",
+    )
+    def test_real_podman_493_image_inspection_passes(self):
+        inspection = self._validate_image_record(self._image_record())
+
+        self.assertEqual(
+            inspection["reported_digest"],
+            self.INDEX_DIGEST,
+        )
+        self.assertEqual(
+            inspection["repository"],
+            self.IMAGE_REPOSITORY,
+        )
+
+    @unittest.skipUnless(
+        sys.version_info[:2] == (3, 11),
+        "Stage 6 builder requires exact Python 3.11",
+    )
+    def test_platform_reported_digest_also_passes(self):
+        inspection = self._validate_image_record(
+            self._image_record(
+                reported_digest=self.PLATFORM_DIGEST,
+            )
+        )
+
+        self.assertEqual(
+            inspection["reported_digest"],
+            self.PLATFORM_DIGEST,
+        )
+
+    @unittest.skipUnless(
+        sys.version_info[:2] == (3, 11),
+        "Stage 6 builder requires exact Python 3.11",
+    )
+    def test_unapproved_reported_digest_is_rejected(self):
+        with self.assertRaisesRegex(
+            self.builder.ReleaseInputError,
+            "reported digest is not approved",
+        ):
+            self._validate_image_record(
+                self._image_record(reported_digest="f" * 64)
+            )
+
+    @unittest.skipUnless(
+        sys.version_info[:2] == (3, 11),
+        "Stage 6 builder requires exact Python 3.11",
+    )
+    def test_both_exact_repository_digest_references_are_required(self):
+        cases = {
+            "missing index": [
+                self._image_reference(digest=self.PLATFORM_DIGEST),
+            ],
+            "missing platform": [
+                self._image_reference(),
+            ],
+            "split repositories": [
+                self._image_reference(),
+                self._image_reference(
+                    repository="registry.example/python",
+                    digest=self.PLATFORM_DIGEST,
+                ),
+            ],
+            "wrong repository suffix match": [
+                self._image_reference(
+                    repository="registry.example/python",
+                ),
+                self._image_reference(
+                    repository="registry.example/python",
+                    digest=self.PLATFORM_DIGEST,
+                ),
+            ],
+        }
+        for name, repo_digests in cases.items():
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(
+                    self.builder.ReleaseInputError,
+                    "both approved repository and platform",
+                ):
+                    self._validate_image_record(
+                        self._image_record(
+                            repo_digests=repo_digests,
+                        )
+                    )
+
+    @unittest.skipUnless(
+        sys.version_info[:2] == (3, 11),
+        "Stage 6 builder requires exact Python 3.11",
+    )
+    def test_config_os_and_architecture_are_revalidated(self):
+        cases = {
+            "config": (
+                self._image_record(config_digest="e" * 64),
+                "image-config digest is not approved",
+            ),
+            "os": (
+                self._image_record(image_os="windows"),
+                "must resolve to Linux amd64",
+            ),
+            "architecture": (
+                self._image_record(architecture="arm64"),
+                "must resolve to Linux amd64",
+            ),
+        }
+        for name, (record, message) in cases.items():
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(
+                    self.builder.ReleaseInputError,
+                    message,
+                ):
+                    self._validate_image_record(record)
+
+    @unittest.skipUnless(
+        sys.version_info[:2] == (3, 11),
+        "Stage 6 builder requires exact Python 3.11",
+    )
+    def test_malformed_repository_digest_inventory_is_rejected(self):
+        required = [
+            self._image_reference(),
+            self._image_reference(digest=self.PLATFORM_DIGEST),
+        ]
+        for repo_digests in (
+            None,
+            self._image_reference(),
+            [self._image_reference(), 7],
+            [*required, ""],
+            [*required, "garbage"],
+            [*required, self._image_reference()],
+        ):
+            with self.subTest(repo_digests=repo_digests):
+                record = self._image_record()
+                record["RepoDigests"] = repo_digests
+                with self.assertRaisesRegex(
+                    self.builder.ReleaseInputError,
+                    "repository digests are invalid",
+                ):
+                    self._validate_image_record(record)
+
+    @unittest.skipUnless(
+        sys.version_info[:2] == (3, 11),
+        "Stage 6 builder requires exact Python 3.11",
+    )
+    def test_noncanonical_image_references_are_rejected(self):
+        digest = self.INDEX_DIGEST
+        for reference in (
+            f"python@sha256:{digest}",
+            f"library/python@sha256:{digest}",
+            f"docker.io/library/python:3.11@sha256:{digest}",
+            f"Docker.io/library/python@sha256:{digest}",
+            f"docker.io/library/pythön@sha256:{digest}",
+            f"registry.example:0/team/python@sha256:{digest}",
+            f"registry.example:70000/team/python@sha256:{digest}",
+        ):
+            with self.subTest(reference=reference):
+                with self.assertRaisesRegex(
+                    self.builder.ReleaseInputError,
+                    "canonical digest reference",
+                ):
+                    self._validate_image_record(
+                        self._image_record(),
+                        reference,
+                    )
+
+    @unittest.skipUnless(
+        sys.version_info[:2] == (3, 11),
+        "Stage 6 builder requires exact Python 3.11",
+    )
+    def test_reviewed_repository_component_separators_are_accepted(self):
+        repository = "registry.example/team/my--image__name"
+        record = self._image_record(
+            repo_digests=[
+                self._image_reference(repository=repository),
+                self._image_reference(
+                    repository=repository,
+                    digest=self.PLATFORM_DIGEST,
+                ),
+            ]
+        )
+        inspection = self._validate_image_record(
+            record,
+            self._image_reference(repository=repository),
+        )
+
+        self.assertEqual(inspection["repository"], repository)
+
+    @unittest.skipUnless(
+        sys.version_info[:2] == (3, 11),
+        "Stage 6 builder requires exact Python 3.11",
+    )
+    def test_missing_core_image_inspection_fields_fail_closed(self):
+        cases = {
+            "record": (
+                None,
+                "inspection record is not an object",
+            ),
+            "digest": (
+                {**self._image_record(), "Digest": None},
+                "reported digest is not a string",
+            ),
+            "config": (
+                {**self._image_record(), "Id": None},
+                "image-config digest is not a string",
+            ),
+            "os": (
+                {**self._image_record(), "Os": None},
+                "must resolve to Linux amd64",
+            ),
+            "architecture": (
+                {**self._image_record(), "Architecture": None},
+                "must resolve to Linux amd64",
+            ),
+        }
+        for name, (record, message) in cases.items():
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(
+                    self.builder.ReleaseInputError,
+                    message,
+                ):
+                    self._validate_image_record(record)
+
+    @unittest.skipUnless(
+        sys.version_info[:2] == (3, 11),
+        "Stage 6 builder requires exact Python 3.11",
+    )
+    def test_post_build_image_identity_is_immutable(self):
+        initial = self._validate_image_record(self._image_record())
+        build_environment = {
+            "observed_image_digest": initial["reported_digest"],
+            "repository_digests": initial["repository_digests"],
+        }
+
+        reordered = {
+            **initial,
+            "repository_digests": list(
+                reversed(initial["repository_digests"])
+            ),
+        }
+        self.builder._assert_image_inspection_identity_unchanged(
+            build_environment,
+            reordered,
+        )
+
+        changed_digest = {
+            **initial,
+            "reported_digest": self.PLATFORM_DIGEST,
+        }
+        with self.assertRaisesRegex(
+            self.builder.ReleaseInputError,
+            "reported digest changed",
+        ):
+            self.builder._assert_image_inspection_identity_unchanged(
+                build_environment,
+                changed_digest,
+            )
+
+        alias = self._image_reference(
+            repository="registry.example/team/python",
+        )
+        for changed_inventory in (
+            initial["repository_digests"][:-1],
+            [*initial["repository_digests"], alias],
+        ):
+            with self.subTest(inventory=changed_inventory):
+                with self.assertRaisesRegex(
+                    self.builder.ReleaseInputError,
+                    "repository digests changed",
+                ):
+                    self.builder._assert_image_inspection_identity_unchanged(
+                        build_environment,
+                        {
+                            **initial,
+                            "repository_digests": changed_inventory,
+                        },
+                    )
+
+    @unittest.skipUnless(
+        sys.version_info[:2] == (3, 11),
+        "Stage 6 builder requires exact Python 3.11",
+    )
+    def test_single_platform_digest_may_equal_repository_digest(self):
+        record = self._image_record(
+            repo_digests=[self._image_reference()],
+        )
+        inspection = self.builder._validate_image_inspection(
+            record,
+            self._image_reference(),
+            expected_repository_digest=self.INDEX_DIGEST,
+            expected_platform_manifest_digest=self.INDEX_DIGEST,
+            expected_image_config_digest=self.CONFIG_DIGEST,
+            description="test image",
+        )
+
+        self.assertEqual(
+            inspection["reported_digest"],
+            self.INDEX_DIGEST,
+        )
 
     def test_legacy_builder_and_source_installer_fail_closed(self):
         for path, expected in (
