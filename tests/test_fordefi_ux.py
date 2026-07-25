@@ -1,5 +1,6 @@
 """Focused Stage 4 tests for Fordefi input UX and credential generation."""
 
+import base64
 import contextlib
 import io
 import os
@@ -11,11 +12,25 @@ from argparse import Namespace
 from pathlib import Path
 from unittest import mock
 
-from shard_core import cli, fordefi, wizard
+from shard_core import cli, fordefi, safeio, wizard
 
 PHRASE = (
     "alpha bravo charlie delta echo foxtrot "
     "golf hotel india juliet kilo lima"
+)
+SHEN_COMPATIBILITY_FIXTURES = (
+    (
+        1,
+        "U0hFTgEBCggBAAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaG2WdBo9tM4J4"
+        "yXdQPCw6S5F+iTaHcahV7v4TPZAE2PqvJCB/FqZ+ieCh49kSg3tZYbyHxy"
+        "Y99gvkoA2TNsM2JCv19LmCrsgD7gIhPXt8HT9aEG3fzEDyyaA=",
+    ),
+    (
+        2,
+        "U0hFTgIBCggBAAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGycMfXpvfeh+"
+        "/bQrU82NWaB+iTaHcahV7v4TPZAE2PqvJCB/FqZ+ieCh49kSg3tZYbyHxyY"
+        "99gvkoA2TNsM2JCv19LmCrsgD7gIhPXt8HT9aEG3fzEDyyaA=",
+    ),
 )
 
 
@@ -163,6 +178,199 @@ class TestFordefiInput(unittest.TestCase):
 
         self.assertEqual(protect.call_args.args[0], PHRASE.encode("ascii"))
         self.assertEqual(protect.call_args.args[5], "fordefi")
+
+    def test_fordefi_encrypt_decrypt_round_trip_uses_shen_v2(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            encrypted = root / "phrase.shen"
+            recovered = root / "phrase.txt"
+            passphrase = b"synthetic wrapping passphrase"
+
+            with mock.patch.object(
+                cli,
+                "_prompt_fordefi_phrase",
+                return_value=PHRASE.encode("ascii"),
+            ), mock.patch.object(
+                cli,
+                "_get_passphrase",
+                return_value=passphrase,
+            ) as get_passphrase:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    cli._cmd_fordefi_encrypt(
+                        Namespace(
+                            phrase_file=None,
+                            allow_nonstandard_phrase=False,
+                            allow_insecure_phrase_file=False,
+                            output=str(encrypted),
+                            force=False,
+                            scrypt_n=10,
+                        )
+                    )
+                self.assertTrue(
+                    get_passphrase.call_args.kwargs["confirm"]
+                )
+
+            decoded = base64.b64decode(encrypted.read_text().strip())
+            self.assertEqual(decoded[:5], b"SHEN\x02")
+
+            with mock.patch.object(
+                cli,
+                "_get_passphrase",
+                return_value=passphrase,
+            ) as get_passphrase:
+                cli._cmd_fordefi_decrypt(
+                    Namespace(
+                        input=str(encrypted),
+                        output=str(recovered),
+                        stdout=False,
+                        force=False,
+                        allow_nonstandard_phrase=False,
+                    )
+                )
+                self.assertFalse(
+                    get_passphrase.call_args.kwargs["confirm"]
+                )
+
+            self.assertEqual(
+                recovered.read_bytes(),
+                PHRASE.encode("ascii"),
+            )
+
+    def test_fordefi_decrypt_reads_fixed_shen_v1_and_v2_fixtures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for version, fixture in SHEN_COMPATIBILITY_FIXTURES:
+                encrypted = root / f"phrase-v{version}.shen"
+                output = root / f"phrase-v{version}.txt"
+                encrypted.write_text(fixture + "\n")
+                with mock.patch.object(
+                    cli,
+                    "_get_passphrase",
+                    return_value=b"fixture-passphrase",
+                ):
+                    cli._cmd_fordefi_decrypt(
+                        Namespace(
+                            input=str(encrypted),
+                            output=str(output),
+                            stdout=False,
+                            force=False,
+                            allow_nonstandard_phrase=False,
+                        )
+                    )
+                self.assertEqual(
+                    output.read_bytes(),
+                    PHRASE.encode("ascii"),
+                )
+
+    def test_fordefi_encrypt_and_decrypt_require_explicit_outputs(self):
+        parser = cli.build_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["fordefi", "encrypt"])
+        with self.assertRaises(SystemExit):
+            parser.parse_args(
+                [
+                    "fordefi",
+                    "decrypt",
+                    "--input",
+                    "phrase.shen",
+                ]
+            )
+
+    def test_fordefi_passphrase_sources_are_mutually_exclusive(self):
+        parser = cli.build_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args(
+                [
+                    "fordefi",
+                    "encrypt",
+                    "--output",
+                    "phrase.shen",
+                    "--passphrase-env",
+                    "SHARD_CORE_PASSPHRASE",
+                    "--passphrase-file",
+                    "passphrase.txt",
+                ]
+            )
+
+    def test_fordefi_interactive_passphrase_mismatch_is_rejected(self):
+        args = Namespace(
+            passphrase_env=None,
+            passphrase_file=None,
+            allow_insecure_passphrase_file=False,
+        )
+        with mock.patch(
+            "getpass.getpass",
+            side_effect=["first passphrase", "second passphrase"],
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "passphrases do not match",
+            ):
+                cli._get_passphrase(args, confirm=True)
+
+    def test_fordefi_decrypt_preserves_passphrase_source_errors(self):
+        args = Namespace(
+            input="unused.shen",
+            output="unused.txt",
+            stdout=False,
+            force=False,
+            allow_nonstandard_phrase=False,
+            passphrase_env="SHARD_CORE_MISSING_PASSPHRASE",
+            passphrase_file=None,
+            allow_insecure_passphrase_file=False,
+        )
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(ValueError, "env var .* is not set"):
+                cli._cmd_fordefi_decrypt(args)
+
+    @unittest.skipUnless(
+        hasattr(os, "symlink"),
+        "symlinks unavailable",
+    )
+    def test_fordefi_encrypt_refuses_existing_and_symlink_outputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            existing = root / "existing.shen"
+            existing.write_text("keep")
+            protected = root / "protected.txt"
+            protected.write_text("do not replace")
+            link = root / "phrase.shen"
+            link.symlink_to(protected)
+
+            base = {
+                "phrase_file": None,
+                "allow_nonstandard_phrase": False,
+                "allow_insecure_phrase_file": False,
+                "scrypt_n": 10,
+            }
+            with mock.patch.object(
+                cli,
+                "_prompt_fordefi_phrase",
+                return_value=PHRASE.encode("ascii"),
+            ), mock.patch.object(
+                cli,
+                "_get_passphrase",
+                return_value=b"synthetic passphrase",
+            ):
+                with self.assertRaises(FileExistsError):
+                    cli._cmd_fordefi_encrypt(
+                        Namespace(
+                            **base,
+                            output=str(existing),
+                            force=False,
+                        )
+                    )
+                with self.assertRaises(safeio.UnsafeOutputPath):
+                    cli._cmd_fordefi_encrypt(
+                        Namespace(
+                            **base,
+                            output=str(link),
+                            force=True,
+                        )
+                    )
+
+            self.assertEqual(existing.read_text(), "keep")
+            self.assertEqual(protected.read_text(), "do not replace")
 
 
 class TestGenerateKeyAndWizard(unittest.TestCase):

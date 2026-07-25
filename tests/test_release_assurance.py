@@ -75,7 +75,7 @@ class ReleaseAssuranceTests(unittest.TestCase):
             text=True,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("UNAPPROVED-CANDIDATE", result.stderr)
+        self.assertIn("isolated rootless Podman build boundary", result.stderr)
 
     def test_lock_generator_has_fixed_target_and_fresh_review_dir(self):
         generator = (ROOT / "scripts/generate-ceremony-lock.sh").read_text(encoding="utf-8")
@@ -156,23 +156,180 @@ class ReleaseAssuranceTests(unittest.TestCase):
         action_refs = set(re.findall(r"uses: (actions/(?:checkout|setup-python)@[0-9a-f]{40})", workflow))
         self.assertEqual(action_refs, EXPECTED_ACTIONS)
         self.assertNotRegex(workflow, r"uses: actions/(?:checkout|setup-python)@v")
+        self.assertIn("permissions:\n  contents: read", workflow)
+        self.assertEqual(
+            workflow.count("persist-credentials: false"),
+            workflow.count("actions/checkout@"),
+        )
 
     def test_ci_runs_optimized_and_stage6_contract_paths(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        self.assertIn("'.[test]'", workflow)
+        self.assertNotIn("'.[test]'", workflow)
+        self.assertNotIn("'.[dev]'", workflow)
+        self.assertIn("--require-hashes", workflow)
+        self.assertIn("release/ci-requirements.txt", workflow)
+        self.assertIn("python -m build --wheel --no-isolation", workflow)
         self.assertIn("python -O -m unittest", workflow)
         self.assertIn("python scripts/build-offline-bundle.py --help", workflow)
         self.assertIn("tests.test_stage6_builder_boundary", workflow)
         self.assertIn("legacy builder unexpectedly succeeded", workflow)
         self.assertNotIn("Build Linux x86_64 ceremony bundle", workflow)
+        self.assertIn(
+            "Hosted CI is test evidence, not candidate provenance",
+            workflow,
+        )
 
-    def test_top_level_installer_never_invokes_package_index(self):
+    def test_top_level_installer_dispatches_only_to_built_bundle(self):
         installer = (ROOT / "install.sh").read_text(encoding="utf-8")
         self.assertNotIn("pip install", installer)
         self.assertNotIn("pipx install", installer)
-        self.assertIn("never contacts a package index", installer)
-        self.assertIn("source-tree ceremony installer is disabled", installer)
-        self.assertNotIn('exec "${bundles[0]}/install-offline.sh"', installer)
+        self.assertIn('"$DIST"/shard-core-*-offline', installer)
+        self.assertIn('exec "$installer" "$TARGET"', installer)
+        self.assertIn('-L "${bundles[0]}"', installer)
+        self.assertIn('-L "$installer"', installer)
+
+    @unittest.skipUnless(
+        hasattr(os, "symlink"),
+        "symlinks unavailable",
+    )
+    def test_top_level_installer_refuses_symlinked_bundle_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dispatcher = root / "install.sh"
+            dispatcher.write_text(
+                (ROOT / "install.sh").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            dispatcher.chmod(0o755)
+
+            fake_bundle = root / "fake-bundle"
+            fake_bundle.mkdir()
+            marker = root / "attacker-installer-ran"
+            fake_installer = fake_bundle / "install-offline.sh"
+            fake_installer.write_text(
+                f"#!/usr/bin/env bash\ntouch {marker}\n",
+                encoding="utf-8",
+            )
+            fake_installer.chmod(0o755)
+
+            dist = root / "dist"
+            dist.mkdir()
+            bundle_link = (
+                dist
+                / (
+                    "shard-core-0.2.0rc1-offline-"
+                    "cp39-abi3-manylinux_2_17_x86_64"
+                )
+            )
+            bundle_link.symlink_to(
+                fake_bundle,
+                target_is_directory=True,
+            )
+
+            completed = subprocess.run(
+                ["bash", str(dispatcher), str(root / "target")],
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn(
+                "refusing symlinked or non-directory offline bundle",
+                completed.stderr,
+            )
+            self.assertFalse(marker.exists())
+
+    @unittest.skipUnless(
+        hasattr(os, "symlink"),
+        "symlinks unavailable",
+    )
+    def test_top_level_installer_refuses_symlinked_dist_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dispatcher = root / "install.sh"
+            dispatcher.write_text(
+                (ROOT / "install.sh").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            dispatcher.chmod(0o755)
+
+            attacker_root = root / "attacker"
+            fake_bundle = (
+                attacker_root
+                / (
+                    "shard-core-0.2.0rc1-offline-"
+                    "cp39-abi3-manylinux_2_17_x86_64"
+                )
+            )
+            fake_bundle.mkdir(parents=True)
+            marker = root / "attacker-installer-ran"
+            fake_installer = fake_bundle / "install-offline.sh"
+            fake_installer.write_text(
+                f"#!/usr/bin/env bash\ntouch {marker}\n",
+                encoding="utf-8",
+            )
+            fake_installer.chmod(0o755)
+            (root / "dist").symlink_to(
+                attacker_root,
+                target_is_directory=True,
+            )
+
+            completed = subprocess.run(
+                ["bash", str(dispatcher), str(root / "target")],
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn(
+                "refusing symlinked offline bundle directory",
+                completed.stderr,
+            )
+            self.assertFalse(marker.exists())
+
+    def test_ci_dependency_lock_is_exact_and_hashed(self):
+        locked = _locked(ROOT / "release/ci-requirements.txt")
+        self.assertEqual(
+            set(locked),
+            {
+                "pycryptodome",
+                "shamir-mnemonic",
+                "mnemonic",
+                "packaging",
+            },
+        )
+        for version, digest in locked.values():
+            self.assertRegex(version, r"^[0-9]+(?:\.[0-9]+)+$")
+            self.assertRegex(digest, r"^[0-9a-f]{64}$")
+        runtime = _locked(
+            ROOT
+            / "release/locks/"
+            "runtime-cp39-abi3-manylinux_2_17_x86_64.txt"
+        )
+        build = _locked(ROOT / "release/build-requirements.txt")
+        for name in ("pycryptodome", "shamir-mnemonic", "mnemonic"):
+            self.assertEqual(locked[name], runtime[name])
+        self.assertEqual(locked["packaging"], build["packaging"])
+
+    def test_builder_materializes_installable_approved_candidate(self):
+        builder = (
+            ROOT / "scripts/build-offline-bundle.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"release_status": "approved_candidate"', builder)
+        self.assertIn('"APPROVED-CANDIDATE.txt"', builder)
+        self.assertIn('bundle / "install-offline.sh"', builder)
+        self.assertIn('bundle / "VERIFY.md"', builder)
+        self.assertNotIn("unapproved_candidate", builder)
+        self.assertNotIn("UNAPPROVED-CANDIDATE", builder)
+        self.assertNotIn("producer authentication", builder.lower())
+
+    def test_offline_installer_refuses_dangling_target_symlink(self):
+        installer = (
+            ROOT / "release/install-offline.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn('[[ -e "$TARGET" || -L "$TARGET" ]]', installer)
 
 
 if __name__ == "__main__":

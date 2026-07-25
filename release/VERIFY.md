@@ -1,29 +1,37 @@
-# Verify and install this ceremony bundle
+# Verify and install the offline bundle
 
-This directory is a platform-specific, hash-locked transport bundle. It is not
-a signature and does not establish who produced or approved the artifacts.
+This directory is a self-contained, hash-locked `shard-core` distribution for
+Linux x86_64 with CPython 3.9 or newer and glibc 2.17 or newer.
 
-On the offline manylinux2014 x86_64, CPython 3.9+ ceremony host:
+## Verify
+
+Transfer the complete directory. From its root, verify the recorded inventory:
 
 ```bash
 sha256sum -c SHA256SUMS
+```
+
+Do not install if any file is missing, extra, or has a mismatched digest. The
+installer repeats these checks and refuses symlinked files.
+
+`BUNDLE-METADATA.json`, `PROVENANCE.json`, and `SBOM.spdx.json` record the
+source revision, pinned build image, dependency locks, tools, and isolated build
+configuration. `APPROVED-CANDIDATE.txt` records that the automated bundle
+contract completed; it is not a security-audit or warranty statement.
+
+## Install without network access
+
+Choose a new installation path:
+
+```bash
 ./install-offline.sh /controlled/path/shard-core-venv
 /controlled/path/shard-core-venv/bin/shard-core --version
 ```
 
-Before production use, independently verify:
+The installer verifies `SHA256SUMS`, creates a virtual environment, and invokes
+pip only with `--no-index`, the bundled wheelhouse, and `--require-hashes`. It
+refuses an existing target, including a dangling symlink.
 
-- The bundle arrived through the approved custody-transfer path.
-- `SHA256SUMS` matches a separately authenticated copy.
-- The wheel names and hashes match the reviewed release record.
-- `SBOM.spdx.json` identifies runtime dependencies and build tools.
-- `BUILD_INFO.txt` records the exact source commit, source-archive digest,
-  lock digests, builder Python and pip versions, and target platform.
-- `BUILD_TOOLS.txt` matches the independently reviewed build-tool lock.
-- The host has no active network path and uses a controlled private directory.
-- A synthetic end-to-end ceremony succeeds before real recovery material is
-  entered.
-
-The installer rejects symlinks and unlisted files, refuses an existing target,
-checks every transferred artifact listed in `SHA256SUMS`, and calls pip with
-`--no-index`, `--find-links`, and `--require-hashes`.
+Keep the bundle, its `SHA256SUMS`, and any non-secret build evidence together if
+you need reproducible release records. Never place recovery phrases, shards,
+passphrases, wrapping credentials, or other secrets in build evidence.
