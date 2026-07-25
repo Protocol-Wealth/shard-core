@@ -598,21 +598,24 @@ class Stage6BuilderBoundaryTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("no offline bundle found", result.stderr)
 
-    def test_readme_names_only_python_builder_as_canonical(self):
+    def test_docs_keep_builder_details_in_canonical_offline_guide(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        offline = readme.split(
-            "### Offline / air-gapped bundle",
-            1,
-        )[1].split("## Guided mode", 1)[0]
+        offline = (ROOT / "OFFLINE_BUILD.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("[OFFLINE_BUILD.md](OFFLINE_BUILD.md)", readme)
+        self.assertNotIn("--expected-conmon-sha256", readme)
+        self.assertNotIn("--expected-podman-config-sha256", readme)
+        self.assertNotIn("--podman-runtime-root", readme)
         self.assertIn(
-            "The canonical bundle builder is",
+            "The canonical builder",
             offline,
         )
         self.assertIn(
-            "python3.11 scripts/build-offline-bundle.py",
+            "scripts/build-offline-bundle.py",
             offline,
         )
-        self.assertIn("APPROVED-CANDIDATE", offline)
         self.assertIn("install-offline.sh", offline)
         self.assertNotIn("UNAPPROVED-CANDIDATE", offline)
         self.assertNotIn("producer authentication", offline.lower())

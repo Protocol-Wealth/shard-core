@@ -1,169 +1,156 @@
 # shard-core
 
-**Local, offline encryption + Shamir n-of-m secret sharing. No network, ever.**
+`shard-core` protects sensitive bytes and recovery phrases with authenticated
+encryption, threshold recovery, and fail-closed file handling.
 
-Split a passphrase, seed phrase, or any secret into `n` shards where any `k` reconstruct it — and encrypt/decrypt data with a passphrase. Runs entirely offline on Linux, WSL, or macOS. Clone it, run it on an airgapped machine, distribute the shards (one to a hardware backup, one to a password manager, one to a custody vendor). Standalone and dependency-light — not tied to any product.
+> **Security status:** `0.2.0rc1` is a prerelease and has not received an
+> independent security audit. Tests and AI-assisted review are not a security
+> audit. Use synthetic material for evaluation and rehearse recovery before
+> protecting production secrets.
 
-> **Not audited.** Provided as-is (see the license). For high-value key material, run it on an airgapped machine and cross-check reconstruction before you rely on it.
+## What it provides
 
-## Why an AEAD layer on top of Shamir?
+| Capability | Status |
+|---|---|
+| ChaCha20-Poly1305 authenticated encryption | Included |
+| Scrypt passphrase encryption | Included |
+| AEAD plus Shamir threshold protection | Included |
+| Corrupt-extra-share recovery and ambiguity detection | Included |
+| Fordefi Recovery Phrases workflow | Included |
+| Optional SLIP-39 support | `.[slip39]` extra |
+| Reproducible, hash-verified offline bundle pipeline | [Included](OFFLINE_BUILD.md) |
+| Implicit plaintext output or silent overwrite | Refused |
 
-Shamir's Secret Sharing is **information-theoretically secure for confidentiality** — with fewer than the threshold number of shards you learn *nothing* about the secret. You do **not** need more encryption for secrecy.
+## Architecture
 
-What Shamir does **not** give you is **integrity**: it can't tell a corrupted or malicious shard from a good one, so you can silently reconstruct the *wrong* secret. `shard-core` therefore encrypts the payload with an authenticated cipher (**ChaCha20-Poly1305**) and Shamir-splits only the 32-byte data key. Reconstruction is then **authenticated** — a wrong or tampered shard makes decryption fail loudly instead of returning a bad secret. This is the same reason SLIP-39 carries a digest. One AEAD layer is the right amount; don't add a third.
+### Protect
 
-Cryptography is delegated to the well-reviewed [`pycryptodome`](https://pypi.org/project/pycryptodome/) library — this project only composes it. No hand-rolled crypto.
+```text
+plaintext
+    |
+    | encrypt with random 32-byte data-encryption key (DEK)
+    v
+ChaCha20-Poly1305 --------------------> authenticated ciphertext C
+    ^                                               |
+    |                                               |
+random DEK -- Shamir split --> K1, K2, ... Kn       |
+                              |                      |
+                              +--> SHRD i = header + Ki + C
+```
+
+Each SHRD artifact contains a unique Shamir key share and the same ciphertext.
+That duplication is intentional: every valid threshold subset is self-contained.
+The trade-off is additional storage, not weaker confidentiality.
+
+The plaintext itself is never Shamir-split. A wrong key-share combination fails
+AEAD authentication instead of returning plausible but incorrect plaintext.
+
+### Recover
+
+```text
+supplied SHRD files
+    |
+    v
+parse and group candidate sets
+    |
+    v
+try bounded threshold combinations
+    |
+    v
+reconstruct DEK -> verify AEAD tag -> plaintext
+                       |
+                       +--> fail closed on corruption or ambiguity
+```
+
+See [THREAT_MODEL.md](THREAT_MODEL.md) for the security properties, assumptions,
+and non-goals.
 
 ## Install
 
-### Development (connected host)
+Requires Python 3.9 or newer.
+
+### Quick install
+
+Use this path for evaluation and normal use on a connected host:
 
 ```bash
 git clone https://github.com/Protocol-Wealth/shard-core.git
 cd shard-core
-python3 -m pip install -e '.[test]'  # or '.[dev]' for build tooling
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install .
+shard-core --version
 ```
 
-Or run without installing:
+This path may obtain dependencies from a package index. To add SLIP-39:
 
 ```bash
-PYTHONPATH=src python3 -m shard_core --help
+python -m pip install '.[slip39]'
 ```
 
-Requires Python 3.9+. `./install.sh` is a convenience dispatcher for exactly
-one offline bundle already present under `dist/`; it never installs from a
-package index.
-
-### Offline / air-gapped bundle
-
-The canonical bundle builder is `scripts/build-offline-bundle.py`. The retired
-host-native `scripts/build-offline-bundle.sh` fails closed because it does not
-provide the isolated build boundary.
-
-The Python builder runs under a dedicated non-root account on Linux x86_64 with
-exactly Python 3.11 and local rootless Podman. Its inputs include:
-
-- Digest-pinned Git, Python, Podman, OCI runtime, and conmon executables.
-- A fixed Podman configuration tree and empty OCI hooks directory.
-- Explicit private Podman storage and runtime roots.
-- A Linux/amd64 image pinned by repository, platform-manifest, and config
-  digests.
-- Runtime and build wheelhouses matching committed hash locks.
-
-Invoke `python3.11 scripts/build-offline-bundle.py --help` for the complete
-argument list. A representative invocation begins:
+For development:
 
 ```bash
-/usr/bin/python3.11 scripts/build-offline-bundle.py \
-  --expected-source-commit "$SOURCE_COMMIT" \
-  --git-path /usr/bin/git \
-  --expected-git-sha256 "$GIT_SHA256" \
-  --python-path /usr/bin/python3.11 \
-  --expected-python-sha256 "$PYTHON_SHA256" \
-  --podman-path /usr/bin/podman \
-  --expected-podman-sha256 "$PODMAN_SHA256" \
-  --expected-oci-runtime-sha256 "$RUNTIME_SHA256" \
-  --expected-conmon-sha256 "$CONMON_SHA256" \
-  --podman-config-root /etc/shard-core/podman \
-  --expected-podman-config-sha256 "$CONFIG_SHA256" \
-  --podman-data-root /var/lib/shard-core-podman \
-  --podman-runtime-root /run/user/"$CEREMONY_UID"/shard-core \
-  --empty-hooks-dir /etc/shard-core/empty-hooks \
-  --expected-ceremony-uid "$CEREMONY_UID" \
-  --expected-ceremony-user shard-core-ceremony \
-  --runtime-wheelhouse /reviewed/runtime-wheels \
-  --build-wheelhouse /reviewed/build-wheels \
-  --output-parent /controlled/candidates \
-  ...remaining pinned image and lock digest arguments...
+python -m pip install -e '.[test]'
 ```
 
-The builder uses a minimal Podman environment, explicit configuration and
-storage roots, `--network=none`, a read-only root filesystem and inputs, and
-two byte-compared builds. It emits:
+### Advanced verified build
 
-```text
-shard-core-<version>-offline-cp39-abi3-manylinux_2_17_x86_64/
-```
-
-The output is a full, installable `APPROVED-CANDIDATE` with `SHA256SUMS`,
-`VERIFY.md`, provenance, SBOM, wheels, hash-locked requirements, and
-`install-offline.sh`. Approved candidate is an automated build status, not a
-security audit or warranty.
-
-Transfer the complete directory. On the offline host:
-
-```bash
-cd shard-core-*-offline-cp39-abi3-manylinux_2_17_x86_64
-sha256sum -c SHA256SUMS
-./install-offline.sh /controlled/path/shard-core-venv
-/controlled/path/shard-core-venv/bin/shard-core --version
-```
-
-The installer repeats the inventory and digest checks and invokes pip only with
-`--no-index`, the bundled wheelhouse, and `--require-hashes`.
-
-## Guided mode
-
-Running `shard-core` with **no arguments** (or `shard-core wizard`) starts an interactive wizard that walks you through the common tasks with plain prompts — split a recovery phrase into shares (one per holder), recover it, and encrypt/decrypt a file. Ideal to hand to someone who doesn't use the command line. Everything below is the underlying flag-driven interface.
-
-## How it works: shares vs. the secret
-
-`shard-core` never hands anyone the secret directly. It produces **shares**:
-
-- **Each share on its own reveals nothing** — it is useless in isolation.
-- The secret stays **encrypted / wrapped**; it is only rebuilt (decrypted) when at least the **threshold** number of shares are brought back together.
-- You choose the threshold: **3-of-5** means any 3 of the 5 shares reconstruct the secret, and any 2 reveal nothing.
-
-So you can give one share to each holder (and one to a storage-only custodian), and no single holder — or custodian — can ever unlock the secret alone. The threshold must be **at least 2**; **3 or more is recommended**.
-
-## Commands
-
-| Command | What it does |
-|---|---|
-| `encrypt` / `decrypt` | Passphrase-based AEAD (one ciphertext blob) |
-| `protect` / `recover` | Encrypt, then Shamir-split the key into `n` shards (`k` reconstruct) |
-| `info` | Show a shard's header (threshold/index) without reconstructing |
-| `verify-set` | Authenticate every threshold-sized combination in a SHRD set |
-| `fordefi encrypt` / `fordefi decrypt` | Direct SHEN backup and recovery for a Fordefi phrase |
-| `fordefi split` / `fordefi combine` | Threshold-share flow for a Fordefi phrase |
-| `slip39 split` / `slip39 combine` | SLIP-39 word-list shares (needs the `slip39` extra) |
-| `generate-key` | Generate a random wrapping credential into a private file |
+For a hash-locked, network-disabled, rootless Podman build and an installable
+offline bundle, follow [OFFLINE_BUILD.md](OFFLINE_BUILD.md). The top-level
+`install.sh` only dispatches to an already built offline bundle; it is not the
+quick installer.
 
 ## Quickstart
 
-### Shard a secret (2-of-3)
+### Authenticated threshold shares
 
 ```bash
-printf 'my recovery phrase' > secret.txt
-shard-core protect -t 2 -n 3 -i secret.txt -o shards/
-#   -> shards/share-01.txt  share-02.txt  share-03.txt   (mode 0600)
+shard-core protect \
+  --threshold 2 \
+  --shares 3 \
+  --input secret.bin \
+  --out-dir shares
+
+shard-core verify-set --require-complete \
+  shares/share-01.txt \
+  shares/share-02.txt \
+  shares/share-03.txt
+
+shard-core recover \
+  --output recovered.bin \
+  shares/share-01.txt \
+  shares/share-03.txt
 ```
 
-Each shard is **self-contained** (it carries the ciphertext) and reveals nothing on its own. Put them in different places. Reconstruct with any two:
+### Passphrase encryption
 
 ```bash
-shard-core recover -o recovered.txt shards/share-01.txt shards/share-03.txt
+shard-core encrypt --input secret.bin --output secret.shen
+shard-core decrypt --input secret.shen --output recovered.bin
 ```
 
-Inspect a shard without reconstructing:
+The commands prompt without echo. For controlled automation, use a private
+regular file with `--passphrase-file`; environment-variable passphrases emit a
+warning.
 
-```bash
-shard-core info shards/share-02.txt
-#   mode=protect version=2 threshold=2 shares=3 index=2 ciphertext_bytes=...
+### Fordefi backup choice
+
+Fordefi lets the operator choose among Public Key Upload, Recovery Phrases,
+and managed provider or hardware-backed methods.
+
+```text
+Fordefi backup method
+    |
+    +--> Public Key Upload / native CoinCover / Station70 / YubiKey
+    |        +--> public-key recovery path; shard-core is not required
+    |
+    +--> Recovery Phrases
+             +--> phrase -> SHEN plus separate credential
+             +--> phrase -> threshold SHRD shares
 ```
 
-### Encrypt with a passphrase (no sharding)
-
-```bash
-shard-core encrypt -i secret.txt -o secret.enc          # prompts for a passphrase
-shard-core decrypt -i secret.enc -o secret.txt
-# non-interactive: --passphrase-env VAR  or  --passphrase-file FILE
-```
-
-### Fordefi recovery-phrase mode
-
-For a direct encrypted Version 2 backup, enter the phrase and wrapping
-passphrase through hidden prompts:
+For the Recovery Phrases path, direct encryption is:
 
 ```bash
 shard-core fordefi encrypt --output protocol-phrase.shen
@@ -172,112 +159,74 @@ shard-core fordefi decrypt \
   --output protocol-phrase.txt
 ```
 
-Encryption confirms both the Fordefi phrase and wrapping passphrase. Decryption
-requires an explicit plaintext output (`--output` or deliberate `--stdout`) and
-revalidates the recovered phrase. Both commands use the existing SHEN v2 format;
-they do not change cryptographic composition or wire bytes.
+Fordefi phrase entry is hidden and confirmed twice. Standard entry requires 12
+lowercase ASCII words; whitespace is canonicalized without changing spelling,
+order, or case. `shard-core` does not assume a Fordefi phrase is BIP-39.
 
-Split a Fordefi recovery phrase into shares (numbered by default):
+Follow [docs/FORDEFI-DISASTER-RECOVERY.md](docs/FORDEFI-DISASTER-RECOVERY.md)
+for method selection, `2-of-2` phrase custody, external-custodian role checks,
+and the final offline Fordefi recovery boundary.
 
-```bash
-shard-core fordefi split -t 3 -n 5 \
-  -o fordefi-shards/ --manifest fordefi-shards/manifest.json
-#   -> share-01.txt  share-02.txt  ...  share-05.txt   (any 3 rebuild the phrase)
-```
+### SLIP-39
 
-Give one share to each holder. Recover later (offline), then feed the phrase to Fordefi's recovery-tool:
+Install `.[slip39]`, then use the explicit `slip39` command family for material
+independently confirmed to be compatible:
 
 ```bash
-shard-core fordefi combine -o phrase.txt \
-  fordefi-shards/share-01.txt fordefi-shards/share-02.txt fordefi-shards/share-03.txt
+shard-core slip39 split \
+  --threshold 2 \
+  --shares 3 \
+  --bip39-file mnemonic.txt \
+  --out-dir slip39-shares
+
+shard-core slip39 combine \
+  --bip39 \
+  --output recovered-mnemonic.txt \
+  slip39-shares/share-01.txt \
+  slip39-shares/share-03.txt
 ```
 
-Before distribution, authenticate every expected threshold combination:
+## Safety defaults
+
+- Sensitive recovery and decryption require `--output FILE` or deliberate
+  `--stdout`.
+- Existing output files are refused unless `--force` is explicit.
+- Final-component symlinks are refused even with `--force`.
+- Multi-file output is fully preflighted before any share is written.
+- New secret files use mode `0600`; new private directories use mode `0700`.
+- Identical duplicate shares are reported; conflicting duplicates fail.
+- Independent complete sets in one recovery invocation fail as ambiguous.
+- Recovery combinations are bounded to prevent uncontrolled work.
+- Manifests contain artifact hashes and set metadata, never plaintext hashes.
+
+These controls assume a trusted host and controlled parent directories. See
+[THREAT_MODEL.md](THREAT_MODEL.md) and [CEREMONY.md](CEREMONY.md).
+
+## Formats and compatibility
+
+- SHEN v2 stores scrypt parameters, salt, nonce, tag, and ciphertext.
+- SHRD v2 stores the authenticated common header, one key share, and ciphertext.
+- SHEN v1/v2 and SHRD v1/v2 readers remain supported.
+- Display comments and holder labels are not cryptographically authenticated.
+
+Wire-format changes require a separate compatibility and cryptographic review.
+
+## Documentation
+
+- [CEREMONY.md](CEREMONY.md): generic safe operator workflow.
+- [docs/FORDEFI-DISASTER-RECOVERY.md](docs/FORDEFI-DISASTER-RECOVERY.md): Fordefi-specific workflow.
+- [OFFLINE_BUILD.md](OFFLINE_BUILD.md): reproducible verified bundle build.
+- [THREAT_MODEL.md](THREAT_MODEL.md): assets, adversaries, assumptions, and scope.
+- [SECURITY.md](SECURITY.md): vulnerability disclosure and support policy.
+- [AGENTS.md](AGENTS.md): rules for AI agents assisting a human.
+
+## Test
 
 ```bash
-shard-core verify-set --require-complete fordefi-shards/share-*.txt
+PYTHONPATH=src python -m unittest discover -s tests -v
+PYTHONPATH=src python -O -m unittest discover -s tests -v
 ```
-
-SHRD split commands self-test every threshold combination in memory before
-writing any file. An optional manifest records the set ID, format, threshold,
-holder labels, filenames, and artifact hashes. It never contains a plaintext
-phrase hash or recovered-secret fingerprint. Holder labels and share-file
-comments are display metadata and are not cryptographically authenticated.
-
-Fordefi entry is hidden and entered twice. Whitespace is canonicalized, but
-word spelling, order, and case are never changed. Standard entry requires
-exactly 12 lowercase ASCII words. `--phrase-file` is available for controlled
-automation, but requires a small private regular file by default.
-
-### SLIP-39 word-list shares
-
-For human-readable, checksummed shares that interoperate with any SLIP-39 tool or hardware wallet, use SLIP-39. Install the extra (Trezor reference libraries):
-
-```bash
-pip install 'shard-core[slip39]'
-```
-
-Split a 16/32-byte secret or a BIP-39 recovery phrase into SLIP-39 word shares:
-
-```bash
-shard-core slip39 split -t 2 -n 3 --bip39-file phrase.txt -o slip39-shares/
-#   each share is a checksummed word list, e.g.:
-#   spirit thorn academic acid coding slavery hormone famous museum zero ...
-
-shard-core slip39 combine --bip39 slip39-shares/share-01.txt slip39-shares/share-03.txt
-```
-
-Or drive it straight from the Fordefi flow:
-
-```bash
-shard-core fordefi split   -t 3 -n 5 --phrase-file phrase.txt --slip39 -o fordefi-shards/
-shard-core fordefi combine --slip39 fordefi-shards/share-01.txt fordefi-shards/share-02.txt fordefi-shards/share-03.txt
-```
-
-**When to use which:** The Fordefi wizard always uses SHRD AEAD+Shamir and
-never assumes Fordefi words are BIP-39. SLIP-39 (`slip39` or the explicit
-advanced `--slip39` option) is only for material independently confirmed to be
-BIP-39 compatible. For arbitrary-length secrets, use `protect`.
-
-Generate a 32-byte wrapping credential without displaying it:
-
-```bash
-shard-core generate-key --bytes 32 --encoding hex \
-  --output /dev/shm/qw-coincover-wrap.key
-```
-
-## Format
-
-Each `protect` shard is a text file: a `#` comment line plus one base64 line. The base64 decodes to `magic("SHRD") | version | threshold | total | index | nonce | tag | key_share_a | key_share_b | ct_len | ciphertext`. All shards from one `protect` carry the same ciphertext; only the key-share and index differ.
-
-**Format v2** (current) has the *identical byte layout* — the version byte reads `2` and the header is additionally bound as AEAD **associated data**, so editing it is detected. The AAD is `"SHRD" | version | threshold | total`; the share index is deliberately excluded, because one ciphertext is shared by every shard of a run and the AAD must therefore be identical across them. For `encrypt` blobs (`magic("SHEN") | version | kdf_id | n_log2 | r | p | salt | nonce | tag | ciphertext`) the AAD is `"SHEN" | version | kdf_id | n_log2 | r | p | salt`.
-
-Format v1 shards and blobs remain readable — they are recognised by the version byte and verified without AAD.
-
-## Security notes
-
-- **Offline only.** No code path opens a socket. Run key operations on an airgapped machine.
-- **Confidentiality** is information-theoretic (Shamir); **integrity** is authenticated (ChaCha20-Poly1305).
-- **Format v2 authenticates the shard header** as AEAD associated data, so an edited threshold/share count fails the MAC instead of producing a misleading error. v1 shards remain readable, but their headers are *unauthenticated* — re-shard (`protect` again) to upgrade.
-- **Passphrase KDF** is scrypt (default cost `N = 2**17`). The cost parameters live in the blob header, so `decrypt` bounds them (`n_log2` 1–31, working set ≤ 8 GiB) before calling scrypt — a corrupt or hostile blob fails with a clear error instead of an out-of-memory kill. The bound is applied identically on encrypt, so it can never lock you out of your own data.
-- Recovered secrets are written `0600`; passphrases are read via prompt / env / file, never a CLI argument.
-- Sensitive plaintext commands require either `--output FILE` or an explicit
-  `--stdout`. Existing regular files are not replaced without `--force`, and
-  final-component output symlinks are always refused.
-- New output directories are created mode `0700` and files are published mode
-  `0600`. These controls assume a trusted offline host and controlled parent
-  directories; they do not claim race resistance when an attacker can replace
-  arbitrary parent-directory components during the ceremony.
-- **`--passphrase-env` is the weakest of the three.** An env var is readable via `/proc/PID/environ` by any process running as the same user, is inherited by child processes, and the command that set it often persists in shell history. Prefer the interactive prompt, or `--passphrase-file` pointing at a ramdisk (`/dev/shm`, `tmpfs`) file you delete afterwards.
-- Python cannot reliably zero secrets in memory — treat the host as trusted for the duration of an operation.
-- Keep **fewer than the threshold** number of shares in any single place. A share is safe to hand to a storage-only custodian because it cannot decrypt below the threshold.
-
-## Related / alternatives
-
-- [Trezor `shamir-mnemonic`](https://pypi.org/project/shamir-mnemonic/) — the SLIP-39 reference (word-list shares); ideal when you want human-readable, checksummed *seed* shares. A future `shard-core` mode may emit SLIP-39 shares.
-- [`dsprenkels/sss-cli`](https://github.com/dsprenkels/sss-cli) — constant-time generic SSS (Rust/C).
-- [`age`](https://age-encryption.org) — modern file encryption (no sharding).
 
 ## License
 
-Dual-licensed under **Apache-2.0 OR MIT-0** — use whichever you prefer. See `LICENSE` and `LICENSE-MIT-0`.
+Dual-licensed under Apache-2.0 or MIT-0. See [LICENSE](LICENSE) and [LICENSE-MIT-0](LICENSE-MIT-0).
