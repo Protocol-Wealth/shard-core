@@ -1,0 +1,55 @@
+name: Bug report
+description: Report a reproducible defect using synthetic data only.
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Never include a real phrase, shard, passphrase, wrapping credential,
+        snapshot, private key, or secret-file hash. Report vulnerabilities
+        through private vulnerability reporting instead.
+  - type: input
+    id: version
+    attributes:
+      label: shard-core version
+      description: Paste only the output of `shard-core --version`.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, architecture, and Python version.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Synthetic reproduction
+      description: Exact commands and synthetic inputs, with all secrets removed.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include only non-secret output.
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: I used synthetic data and removed all secrets and secret-file hashes.
+          required: true
+        - label: This report does not disclose an unpatched vulnerability.
+          required: true

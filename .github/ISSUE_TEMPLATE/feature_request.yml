@@ -1,0 +1,34 @@
+name: Feature request
+description: Propose a focused capability or workflow improvement.
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What operator or developer problem should be solved?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the CLI or library contract without production secrets.
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security and compatibility impact
+      description: Address wire formats, plaintext output, file safety, recovery ambiguity, and dependency changes where applicable.
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: This request contains no recovery material, credentials, or secret-file hashes.
+          required: true

@@ -13,8 +13,9 @@ Read these in order:
 4. `CEREMONY.md` for the generic human-operated custody workflow.
 5. `docs/FORDEFI-DISASTER-RECOVERY.md` for the Fordefi workflow.
 6. `OFFLINE_BUILD.md` for the verified offline build boundary.
-7. `release/VERIFY.md` when handling a generated offline bundle.
-8. Current Fordefi documentation linked from the Fordefi runbook.
+7. `RELEASING.md` for the stable release and Trusted Publishing procedure.
+8. `release/VERIFY.md` when handling a generated offline bundle.
+9. Current Fordefi documentation linked from the Fordefi runbook.
 
 Do not rely on an old chat transcript when repository or vendor documentation
 is available. `AGENTS.md` is the AI guidance entry point; a duplicate

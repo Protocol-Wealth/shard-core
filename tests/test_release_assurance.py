@@ -38,6 +38,119 @@ class ReleaseAssuranceTests(unittest.TestCase):
         project_version = re.search(r'^version = "([^"]+)"$', project, re.MULTILINE).group(1)
         package_version = re.search(r'^__version__ = "([^"]+)"$', package, re.MULTILINE).group(1)
         self.assertEqual(project_version, package_version)
+        self.assertEqual(project_version, "0.2.0")
+
+    def test_stable_release_metadata_and_community_files(self):
+        project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn(
+            'Homepage = "https://protocolwealthllc.com/opensource/encryption"',
+            project,
+        )
+        self.assertIn(
+            'Security = "https://github.com/Protocol-Wealth/shard-core/security/policy"',
+            project,
+        )
+        self.assertIn('requires = ["setuptools>=77"]', project)
+        self.assertIn('license = "Apache-2.0 OR MIT-0"', project)
+        self.assertIn(
+            'license-files = ["LICENSE", "LICENSE-MIT-0"]',
+            project,
+        )
+        self.assertNotIn("license = { text =", project)
+        for relative in (
+            "CHANGELOG.md",
+            "CODE_OF_CONDUCT.md",
+            "CONTRIBUTING.md",
+            "SUPPORT.md",
+            "CITATION.cff",
+            "RELEASING.md",
+            ".github/ISSUE_TEMPLATE/config.yml",
+            ".github/ISSUE_TEMPLATE/bug_report.yml",
+            ".github/ISSUE_TEMPLATE/feature_request.yml",
+            ".github/pull_request_template.md",
+        ):
+            self.assertTrue((ROOT / relative).is_file(), relative)
+
+    def test_pypi_publish_uses_manual_oidc_trusted_publishing(self):
+        workflow = (
+            ROOT / ".github/workflows/publish-pypi.yml"
+        ).read_text(encoding="utf-8")
+        build_job, publish_job = workflow.split("\n  publish:\n", 1)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn("on:\n  release:", workflow)
+        self.assertIn("contents: read", workflow)
+        self.assertIn("persist-credentials: false", workflow)
+        self.assertIn("environment:\n      name: pypi", workflow)
+        self.assertIn("--require-hashes", workflow)
+        self.assertIn("release/build-requirements.txt", workflow)
+        self.assertIn("scripts/validate-release-tag.py", workflow)
+        self.assertIn("python -m build --no-isolation", workflow)
+        self.assertIn(
+            "actions/upload-artifact@"
+            "ea165f8d65b6e75b540449e92b4886f43607fa02",
+            build_job,
+        )
+        self.assertNotIn("id-token: write", build_job)
+        self.assertNotIn("actions/checkout@", publish_job)
+        self.assertIn("needs: build", publish_job)
+        self.assertIn("id-token: write", publish_job)
+        self.assertIn(
+            "actions/download-artifact@"
+            "d3f86a106a0bac45b974a628896c90dbdf5c8093",
+            publish_job,
+        )
+        self.assertIn(
+            "pypa/gh-action-pypi-publish@"
+            "ba38be9e461d3875417946c167d0b5f3d385a247",
+            publish_job,
+        )
+        self.assertNotRegex(
+            workflow,
+            r"pypa/gh-action-pypi-publish@(?:release/)?v",
+        )
+        self.assertNotIn("password:", workflow)
+
+    def test_release_tag_validator_enforces_exact_final_version(self):
+        script = ROOT / "scripts/validate-release-tag.py"
+        valid = subprocess.run(
+            [
+                "python3",
+                str(script),
+                "--tag",
+                "v0.2.0",
+                "--pyproject",
+                str(ROOT / "pyproject.toml"),
+            ],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        self.assertEqual(valid.returncode, 0, valid.stderr)
+        self.assertEqual(valid.stdout.strip(), "0.2.0")
+
+        for invalid in (
+            "0.2.0",
+            "v0.2",
+            "v0.2.0rc1",
+            "v0.2.0+local",
+            "v0.2.0.1",
+            "v0x2x0",
+            "v0.2.0evil",
+        ):
+            rejected = subprocess.run(
+                [
+                    "python3",
+                    str(script),
+                    "--tag",
+                    invalid,
+                    "--pyproject",
+                    str(ROOT / "pyproject.toml"),
+                ],
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertNotEqual(rejected.returncode, 0, invalid)
 
     def test_runtime_lock_matches_reviewed_hashes_and_pins(self):
         pins = {}
@@ -135,7 +248,7 @@ class ReleaseAssuranceTests(unittest.TestCase):
                     str(ROOT / "scripts/render-release-sbom.py"),
                     "--output", str(output),
                     "--bundle-name", 'bundle-\"quoted\"',
-                    "--version", "0.2.0rc1",
+                    "--version", "0.2.0",
                     "--source-rev", "a" * 40,
                     "--source-describe", 'tag-\"quoted\"',
                     "--source-archive-sha256", "b" * 64,
@@ -217,7 +330,7 @@ class ReleaseAssuranceTests(unittest.TestCase):
             bundle_link = (
                 dist
                 / (
-                    "shard-core-0.2.0rc1-offline-"
+                    "shard-core-0.2.0-offline-"
                     "cp39-abi3-manylinux_2_17_x86_64"
                 )
             )
@@ -258,7 +371,7 @@ class ReleaseAssuranceTests(unittest.TestCase):
             fake_bundle = (
                 attacker_root
                 / (
-                    "shard-core-0.2.0rc1-offline-"
+                    "shard-core-0.2.0-offline-"
                     "cp39-abi3-manylinux_2_17_x86_64"
                 )
             )

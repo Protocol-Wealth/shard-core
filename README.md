@@ -1,12 +1,16 @@
 # shard-core
 
+[![CI](https://github.com/Protocol-Wealth/shard-core/actions/workflows/ci.yml/badge.svg)](https://github.com/Protocol-Wealth/shard-core/actions/workflows/ci.yml)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-1f6feb)](https://www.python.org/)
+[![License: Apache--2.0 OR MIT--0](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT--0-2ea44f)](LICENSE)
+
 `shard-core` protects sensitive bytes and recovery phrases with authenticated
 encryption, threshold recovery, and fail-closed file handling.
 
-> **Security status:** `0.2.0rc1` is a prerelease and has not received an
-> independent security audit. Tests and AI-assisted review are not a security
-> audit. Use synthetic material for evaluation and rehearse recovery before
-> protecting production secrets.
+> **Security status:** `0.2.0` is the first stable release and has not received
+> an independent security audit. Tests and AI-assisted review are not a
+> security audit. Use synthetic material for evaluation and rehearse recovery
+> before protecting production secrets.
 
 ## What it provides
 
@@ -74,7 +78,8 @@ Requires Python 3.9 or newer.
 Use this path for evaluation and normal use on a connected host:
 
 ```bash
-git clone https://github.com/Protocol-Wealth/shard-core.git
+git clone --branch v0.2.0 --depth 1 \
+  https://github.com/Protocol-Wealth/shard-core.git
 cd shard-core
 python3 -m venv .venv
 . .venv/bin/activate
@@ -219,6 +224,10 @@ Wire-format changes require a separate compatibility and cryptographic review.
 - [THREAT_MODEL.md](THREAT_MODEL.md): assets, adversaries, assumptions, and scope.
 - [SECURITY.md](SECURITY.md): vulnerability disclosure and support policy.
 - [AGENTS.md](AGENTS.md): rules for AI agents assisting a human.
+- [CHANGELOG.md](CHANGELOG.md): release history and compatibility notes.
+- [CONTRIBUTING.md](CONTRIBUTING.md): development and review workflow.
+- [SUPPORT.md](SUPPORT.md): support boundaries and safe issue reporting.
+- [RELEASING.md](RELEASING.md): maintainer release procedure.
 
 ## Test
 
