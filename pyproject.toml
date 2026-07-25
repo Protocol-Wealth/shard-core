@@ -22,7 +22,11 @@ dependencies = ["pycryptodome>=3.20"]
 # SLIP-39 word-list shares (Trezor reference libs). Install: pip install 'shard-core[slip39]'
 slip39 = ["shamir-mnemonic>=0.3.0", "mnemonic>=0.20"]
 # Test coverage includes the optional SLIP-39 implementation.
-test = ["shamir-mnemonic>=0.3.0", "mnemonic>=0.20"]
+test = [
+  "shamir-mnemonic>=0.3.0",
+  "mnemonic>=0.20",
+  "packaging>=26.2",
+]
 # Release tooling is intentionally separate from runtime dependencies.
 dev = [
   "shamir-mnemonic>=0.3.0",

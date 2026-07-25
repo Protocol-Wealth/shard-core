@@ -1,23 +1,13 @@
 #!/usr/bin/env bash
-# Network-free dispatcher for a generated shard-core ceremony bundle.
+# The source tree cannot promote or install a ceremony candidate.
 set -euo pipefail
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-shopt -s nullglob
-bundles=("$ROOT"/dist/shard-core-*-offline-linux-x86_64)
+cat >&2 <<'EOF'
+The source-tree ceremony installer is disabled.
 
-if (( ${#bundles[@]} != 1 )); then
-  cat >&2 <<'EOF'
-No unique offline ceremony bundle was found under dist/.
-
-Build one on a connected packaging host:
-  bash scripts/build-offline-bundle.sh
-
-Transfer the resulting dist/shard-core-*-offline-linux-x86_64 directory to the
-offline ceremony host, verify SHA256SUMS, and run its install-offline.sh.
-This dispatcher never contacts a package index.
+The canonical Stage 6 builder emits an UNAPPROVED-CANDIDATE with no installer.
+Do not use a legacy dist/ bundle. A candidate must first pass independent
+review, producer authentication, and the separately controlled promotion gate.
+This command never contacts a package index.
 EOF
-  exit 1
-fi
-
-exec "${bundles[0]}/install-offline.sh" "$@"
+exit 1

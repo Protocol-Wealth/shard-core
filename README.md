@@ -14,36 +14,82 @@ What Shamir does **not** give you is **integrity**: it can't tell a corrupted or
 
 Cryptography is delegated to the well-reviewed [`pycryptodome`](https://pypi.org/project/pycryptodome/) library — this project only composes it. No hand-rolled crypto.
 
-## Install (WSL / macOS / Linux)
+## Install
 
-For development, install the declared test extra to include SLIP-39 coverage:
+### Development (connected host)
 
 ```bash
 git clone https://github.com/Protocol-Wealth/shard-core.git
 cd shard-core
-./install.sh
+python3 -m pip install -e '.[test]'  # or '.[dev]' for build tooling
 ```
 
-Then just run it:
+Or run without installing:
 
 ```bash
-shard-core            # guided, interactive mode — no flags to remember
+PYTHONPATH=src python3 -m shard_core --help
 ```
 
-Use `pip install -e '.[test]'`, or run without installing via
-`PYTHONPATH=src python3 -m shard_core --help`. Requires Python 3.9+.
+Requires Python 3.9+. `./install.sh` is deliberately disabled: the source tree
+cannot promote or install a ceremony candidate.
 
-For a ceremony host, do not install from a package index. On a connected,
-controlled packaging host, build the hash-locked bundle:
+### Ceremony / air-gapped host
+
+Do not install from a package index. The only ceremony candidate builder is
+`scripts/build-offline-bundle.py`. The retired
+`scripts/build-offline-bundle.sh` fails closed and must not be used as release
+evidence.
+
+The Python builder must run as a dedicated, exclusive, non-root ceremony
+account on reviewed Linux x86_64 infrastructure with exactly Python 3.11 and
+local rootless Podman. Before invocation, an administrator must provision:
+
+- Root-controlled, digest-approved Git, Python, Podman, OCI runtime, and conmon
+  executables.
+- A root-controlled empty OCI hooks directory.
+- A root-controlled Podman configuration root containing exactly
+  `containers/containers.conf`, `containers/storage.conf`,
+  `containers/registries.conf`, and an empty `containers/mounts.conf`.
+- Ceremony-owned mode-`0700` Podman data, runtime, and output directories.
+- A locally present Linux/amd64 build image pinned by approved repository,
+  platform-manifest, and image-config digests.
+- Independently reviewed runtime and build wheelhouses matching the committed
+  hash locks.
+
+Invoke `python3.11 scripts/build-offline-bundle.py --help` for the complete
+required argument list. A representative invocation begins:
 
 ```bash
-bash scripts/build-offline-bundle.sh
+/usr/bin/python3.11 scripts/build-offline-bundle.py \
+  --expected-source-commit "$APPROVED_COMMIT" \
+  --git-path /usr/bin/git \
+  --expected-git-sha256 "$APPROVED_GIT_SHA256" \
+  --python-path /usr/bin/python3.11 \
+  --expected-python-sha256 "$APPROVED_PYTHON_SHA256" \
+  --podman-path /usr/bin/podman \
+  --expected-podman-sha256 "$APPROVED_PODMAN_SHA256" \
+  --expected-oci-runtime-sha256 "$APPROVED_RUNTIME_SHA256" \
+  --expected-conmon-sha256 "$APPROVED_CONMON_SHA256" \
+  --podman-config-root /etc/shard-core/podman \
+  --expected-podman-config-sha256 "$APPROVED_CONFIG_SHA256" \
+  --podman-data-root /var/lib/shard-core-podman \
+  --podman-runtime-root /run/user/"$CEREMONY_UID"/shard-core \
+  --empty-hooks-dir /etc/shard-core/empty-hooks \
+  --expected-ceremony-uid "$CEREMONY_UID" \
+  --expected-ceremony-user shard-core-ceremony \
+  --runtime-wheelhouse /reviewed/runtime-wheels \
+  --build-wheelhouse /reviewed/build-wheels \
+  --output-parent /controlled/candidates \
+  ...remaining approved image and lock digest arguments...
 ```
 
-Transfer the generated `dist/shard-core-*-offline-linux-x86_64/` directory to
-the offline host. Follow its `VERIFY.md`, then run `install-offline.sh`. The
-installer verifies `SHA256SUMS` and uses only `--no-index`,
-`--find-links ./wheels`, and `--require-hashes`.
+The builder uses a minimal Podman environment, explicit configuration and
+storage roots, `--network=none`, a read-only root filesystem and inputs, and
+two byte-compared builds. It emits only
+`UNAPPROVED-CANDIDATE-<version>-.../`, with no installer. It is not a
+production ceremony bundle. Independent review, producer authentication, a
+real Podman smoke test against the exact commit, and a separately controlled
+authenticated promotion step remain mandatory.
 
 ## Guided mode
 

@@ -1,0 +1,9 @@
+# Pre-reviewed, hash-locked inputs for the Linux x86_64 ceremony wheelhouse.
+# Generated from ceremony-requirements-linux-x86_64.in after independent
+# inspection of the upstream wheels. Do not regenerate casually.
+#
+# pycryptodome uses the cp37-abi3 manylinux wheel so one hash covers
+# CPython 3.9+ on x86_64.
+pycryptodome==3.23.0 --hash=sha256:c8987bd3307a39bc03df5c8e0e3d8be0c4c3518b7f044b0f4c15d1aa78f52575
+shamir-mnemonic==0.3.0 --hash=sha256:188c6b5bd00d5e756e12e2b186c3cb7c98ff7ff44df608d4c1d2077f6b6e730f
+mnemonic==0.20 --hash=sha256:acd2168872d0379e7a10873bb3e12bf6c91b35de758135c4fbd1015ef18fafc5
