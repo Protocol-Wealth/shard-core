@@ -1,5 +1,9 @@
-# Exact reviewed inputs for the Linux x86_64 ceremony wheelhouse.
-# Update deliberately, rebuild the bundle, and independently review all wheels.
+# Exact reviewed version pins for the Linux x86_64 ceremony wheelhouse.
+# After changing any pin:
+#   1. On a trusted, connected host run scripts/generate-ceremony-lock.sh
+#   2. Independently inspect every downloaded wheel
+#   3. Commit the resulting ceremony-requirements-linux-x86_64.txt
+#   4. Rebuild and re-review the full offline bundle
 pycryptodome==3.23.0
 shamir-mnemonic==0.3.0
 mnemonic==0.20
