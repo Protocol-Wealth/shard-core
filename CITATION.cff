@@ -6,6 +6,6 @@ authors:
   - name: "Protocol Wealth LLC"
 repository-code: "https://github.com/Protocol-Wealth/shard-core"
 url: "https://protocolwealthllc.com/opensource/encryption"
-version: "0.2.0"
-date-released: "2026-07-25"
+version: "0.3.0"
+date-released: "2026-07-26"
 license: "Apache-2.0 OR MIT-0"

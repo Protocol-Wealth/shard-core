@@ -17,13 +17,14 @@ boundary, use the public issue tracker.
 
 ## Supported versions
 
-Security fixes are applied to the latest `main` branch and the current `0.2.x`
+Security fixes are applied to the latest `main` branch and the current `0.3.x`
 stable line. Older commits, copied scripts, and previously generated offline
 bundles are not independently maintained.
 
 | Version | Security fixes |
 |---|---|
-| latest `main` / current `0.2.x` stable release | Supported |
+| latest `main` / current `0.3.x` stable release | Supported |
+| `0.2.x` | Not supported |
 | older commits and bundles | Not supported |
 | `0.1.x` | Not supported |
 

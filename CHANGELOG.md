@@ -7,6 +7,12 @@ compatibility is treated separately and remains explicitly versioned.
 
 ## [Unreleased]
 
+No changes yet.
+
+## [0.3.0] - 2026-07-26
+
+Second stable open-source release.
+
 ### Added
 
 - A guided custody-route selector covering provider-native workflows,
@@ -22,6 +28,27 @@ compatibility is treated separately and remains explicitly versioned.
   preservation, Fordefi-specific routing, hidden-input enforcement, and
   non-empty passphrase checks for the expanded custody workflow.
 - The guided encryption output default now uses the `.shen` extension.
+- Written SHRD and SLIP-39 artifacts are now read back and verified through
+  their respective recovery implementations before the wizard recommends
+  distribution.
+- The generic ceremony and threat model now distinguish offline `shard-core`
+  work from provider-required controlled connected environments.
+- CLI share guidance now distinguishes below-threshold plaintext
+  confidentiality from visible share headers and ciphertext length.
+
+### Compatibility
+
+- SHEN v1 and v2 artifacts remain readable.
+- SHRD v1 and v2 artifacts remain readable.
+- This release does not change SHEN v2 or SHRD v2 wire bytes.
+
+### Known limitations
+
+- External providers must independently confirm accepted artifact formats,
+  release authentication, and retrieval procedures.
+- The advanced verified bundle profile remains Linux x86_64, CPython 3.9+
+  ABI3, with a reviewed Python 3.11 rootless-Podman builder.
+- The project has not received an independent professional security audit.
 
 ## [0.2.0] - 2026-07-25
 
@@ -63,5 +90,6 @@ First stable open-source release.
 - `shard-core` does not invoke Fordefi's recovery tool or define external
   custodian authentication and release procedures.
 
-[Unreleased]: https://github.com/Protocol-Wealth/shard-core/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Protocol-Wealth/shard-core/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Protocol-Wealth/shard-core/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Protocol-Wealth/shard-core/releases/tag/v0.2.0

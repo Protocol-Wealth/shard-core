@@ -38,10 +38,11 @@ class ReleaseAssuranceTests(unittest.TestCase):
         project_version = re.search(r'^version = "([^"]+)"$', project, re.MULTILINE).group(1)
         package_version = re.search(r'^__version__ = "([^"]+)"$', package, re.MULTILINE).group(1)
         self.assertEqual(project_version, package_version)
-        self.assertEqual(project_version, "0.2.0")
+        self.assertEqual(project_version, "0.3.0")
 
     def test_stable_release_metadata_and_community_files(self):
         project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        cli = (ROOT / "src/shard_core/cli.py").read_text(encoding="utf-8")
         self.assertIn(
             'Homepage = "https://protocolwealthllc.com/opensource/encryption"',
             project,
@@ -57,6 +58,12 @@ class ReleaseAssuranceTests(unittest.TestCase):
             project,
         )
         self.assertNotIn("license = { text =", project)
+        self.assertNotIn("reveals NOTHING", cli)
+        self.assertNotIn("fewer reveal nothing", cli)
+        self.assertIn(
+            "Share headers and ciphertext length still expose limited metadata.",
+            cli,
+        )
         for relative in (
             "CHANGELOG.md",
             "CODE_OF_CONDUCT.md",
@@ -117,7 +124,7 @@ class ReleaseAssuranceTests(unittest.TestCase):
                 "python3",
                 str(script),
                 "--tag",
-                "v0.2.0",
+                "v0.3.0",
                 "--pyproject",
                 str(ROOT / "pyproject.toml"),
             ],
@@ -126,16 +133,16 @@ class ReleaseAssuranceTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(valid.returncode, 0, valid.stderr)
-        self.assertEqual(valid.stdout.strip(), "0.2.0")
+        self.assertEqual(valid.stdout.strip(), "0.3.0")
 
         for invalid in (
-            "0.2.0",
-            "v0.2",
-            "v0.2.0rc1",
-            "v0.2.0+local",
-            "v0.2.0.1",
-            "v0x2x0",
-            "v0.2.0evil",
+            "0.3.0",
+            "v0.3",
+            "v0.3.0rc1",
+            "v0.3.0+local",
+            "v0.3.0.1",
+            "v0x3x0",
+            "v0.3.0evil",
         ):
             rejected = subprocess.run(
                 [
@@ -248,7 +255,7 @@ class ReleaseAssuranceTests(unittest.TestCase):
                     str(ROOT / "scripts/render-release-sbom.py"),
                     "--output", str(output),
                     "--bundle-name", 'bundle-\"quoted\"',
-                    "--version", "0.2.0",
+                    "--version", "0.3.0",
                     "--source-rev", "a" * 40,
                     "--source-describe", 'tag-\"quoted\"',
                     "--source-archive-sha256", "b" * 64,
@@ -330,7 +337,7 @@ class ReleaseAssuranceTests(unittest.TestCase):
             bundle_link = (
                 dist
                 / (
-                    "shard-core-0.2.0-offline-"
+                    "shard-core-0.3.0-offline-"
                     "cp39-abi3-manylinux_2_17_x86_64"
                 )
             )
@@ -371,7 +378,7 @@ class ReleaseAssuranceTests(unittest.TestCase):
             fake_bundle = (
                 attacker_root
                 / (
-                    "shard-core-0.2.0-offline-"
+                    "shard-core-0.3.0-offline-"
                     "cp39-abi3-manylinux_2_17_x86_64"
                 )
             )
