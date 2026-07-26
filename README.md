@@ -7,10 +7,12 @@
 `shard-core` protects sensitive bytes and recovery phrases with authenticated
 encryption, threshold recovery, and fail-closed file handling.
 
-> **Security status:** `0.2.0` is the first stable release and has not received
-> an independent security audit. Tests and AI-assisted review are not a
-> security audit. Use synthetic material for evaluation and rehearse recovery
-> before protecting production secrets.
+> **Security status:** `0.3.0` is the current source release and has not
+> received an independent security audit. Tests and AI-assisted review are not
+> a security audit. Use synthetic material for evaluation and rehearse
+> recovery before protecting production secrets. The installation commands
+> below remain pinned to the last verified published release until `0.3.0`
+> publication is confirmed.
 
 ## What it provides
 

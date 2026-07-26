@@ -239,7 +239,8 @@ def _do_protect(
         print(f"  {p}")
     if manifest_target is not None:
         print(f"  manifest: {manifest_target}")
-    print("\nEach shard is self-contained and reveals NOTHING on its own.")
+    print("\nOne below-threshold shard cannot recover the plaintext.")
+    print("Share headers and ciphertext length still expose limited metadata.")
     print("Store shards in separate places; keep fewer than the threshold in any one place.")
 
 
@@ -438,8 +439,12 @@ def _cmd_fordefi_split(args) -> None:
             manifest_path=getattr(args, "manifest", None),
         )
     print("\nGive one share to each holder; store them in separate places.")
-    print(f"Any {args.threshold} shares together rebuild the phrase; fewer reveal nothing.")
-    print("A holder that only stores a share cannot rebuild anything alone.")
+    print(
+        f"Any {args.threshold} shares together rebuild the phrase; "
+        "fewer cannot recover its plaintext."
+    )
+    print("Share headers and ciphertext length still expose limited metadata.")
+    print("A holder that only stores one share cannot recover the phrase alone.")
     print("To recover later, run `shard-core fordefi combine ...` offline, then feed the phrase")
     print("to Fordefi's recovery-tool. Do this only on an airgapped machine.")
 
