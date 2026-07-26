@@ -32,8 +32,12 @@ Do not report an unpatched vulnerability publicly.
 
 Questions about artifact acceptance, custody, authentication, authorization,
 retention, retrieval, or release are governed by the applicable provider
-agreement. The project cannot define Qapture, Nemean, CoinCover, Fordefi, or
-another provider's current operational requirements.
+agreement. The project cannot define Qapture, Nemean, CoinCover, Fordefi,
+Station70, or another provider's current operational requirements.
+
+Use [docs/CUSTODY-PATTERNS.md](docs/CUSTODY-PATTERNS.md) to select between a
+provider-native workflow, one externally held SHEN artifact, and threshold
+SHRD distribution. `shard-core` does not run provider CLIs or upload files.
 
 For Fordefi recovery, use the current official Fordefi documentation in
 addition to the repository runbook.

@@ -7,7 +7,21 @@ compatibility is treated separately and remains explicitly versioned.
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- A guided custody-route selector covering provider-native workflows,
+  externally held SHEN artifacts, and SHRD distribution across custodians,
+  businesses, or trusted people.
+- Vendor-neutral CoinCover, Station70 Bunker, Station70 Custom Upload, Nemean,
+  peer-to-peer, tri-party, and nested-provider custody patterns without adding
+  vendor APIs or changing SHEN/SHRD formats.
+
+### Changed
+
+- Written-file verification in the guided SHRD flow, exact file-byte
+  preservation, Fordefi-specific routing, hidden-input enforcement, and
+  non-empty passphrase checks for the expanded custody workflow.
+- The guided encryption output default now uses the `.shen` extension.
 
 ## [0.2.0] - 2026-07-25
 

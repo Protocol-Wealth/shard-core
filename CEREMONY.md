@@ -10,9 +10,18 @@ Choose one model before handling a secret:
 
 | Model | Use when | Recovery dependency |
 |---|---|---|
+| Provider-native workflow | A provider requires its own CLI, browser, wallet integration, keys, or upload | Provider artifacts, credentials, devices, and release process |
 | SHEN passphrase encryption | One holder stores ciphertext | SHEN file plus separate wrapping credential |
 | SHRD threshold protection | Multiple holders must cooperate | Any valid threshold of SHRD files |
 | SLIP-39 | Human-readable shares are required for independently confirmed compatible material | Valid SLIP-39 threshold plus optional passphrase |
+
+Provider-native workflows are outside `shard-core`. Examples include
+CoinCover's Key Vault CLI, Station70's native Bunker integrations, and
+Station70 Custom Upload. Do not first create SHEN or SHRD output when the
+provider requires the original plaintext or its own browser/CLI encryption.
+If an external provider will instead hold SHEN or one SHRD file, confirm that
+exact format and its release procedure in writing. See
+[docs/CUSTODY-PATTERNS.md](docs/CUSTODY-PATTERNS.md).
 
 Do not layer mechanisms without stating which risk the added layer addresses.
 Every additional credential or holder can also create a new availability risk.
@@ -33,11 +42,17 @@ become an offline guessing target.
 
 ## 3. Prepare the controlled host
 
-- Use a trusted offline host and controlled private working directory.
+- For `shard-core` SHEN, SHRD, or SLIP-39 creation and recovery, use a
+  trusted offline host and controlled private working directory.
+- For a provider-native workflow, use the provider-required controlled
+  environment. If its CLI, browser, wallet integration, or upload requires a
+  connected host, record that host, network path, provider application, and
+  authentication devices inside the workflow's trust and availability
+  boundary.
 - Disable recording, screen sharing, clipboard synchronization, and shell
   tracing.
 - Install through the verified bundle path in [OFFLINE_BUILD.md](OFFLINE_BUILD.md)
-  when required by the custody model.
+  when `shard-core` is part of the custody model.
 - Confirm the host clock, expected software version, available storage, and
   approved output paths without displaying secret contents.
 - Refuse unexpected existing files, symlinks, or uncontrolled parent paths.
@@ -79,6 +94,8 @@ will actually be distributed.
 - Compare its artifact SHA-256 at deposit and receipt.
 - Confirm the custodian does not alter bytes, line endings, filenames, or
   archive structure.
+- Confirm whether the accepted input is original plaintext, SHEN, SHRD, or a
+  provider-defined format.
 - Confirm release authentication, authorization, expected timing, and contact
   escalation from the actual custody agreement.
 - Do not send a SHEN artifact and its wrapping credential through the same path
@@ -89,9 +106,10 @@ authority, or future availability.
 
 ## 7. Conduct a retrieval drill
 
-Retrieve the required artifacts through the real release process. Work in a
-new private offline directory and recover only synthetic material during
-routine drills.
+Retrieve the required artifacts through the real release process. For
+`shard-core` recovery, work in a new private offline directory. For a
+provider-native drill, use the provider-required controlled environment
+defined in section 3. Recover only synthetic material during routine drills.
 
 ```text
 retrieved artifacts
@@ -128,7 +146,9 @@ is explicitly accepted and controlled.
   media-handling procedure.
 - Remember that ordinary deletion is not guaranteed secure erasure on SSD,
   copy-on-write, journaling, snapshotting, or virtualized storage.
-- End the offline session and return media and devices to their approved state.
+- End the applicable controlled session—offline for `shard-core` or the
+  provider-required environment for a native workflow—and return media and
+  devices to their approved state.
 
 ## AI-assisted walkthrough
 

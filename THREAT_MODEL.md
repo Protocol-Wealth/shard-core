@@ -122,8 +122,11 @@ must authenticate.
 
 ## Operational assumptions
 
-- Production ceremonies run on a controlled offline host with private working
-  directories and no recording or screen sharing.
+- Production `shard-core` creation and recovery ceremonies run on a controlled
+  offline host with private working directories and no recording or screen
+  sharing. Provider-native workflows are outside this assumption and inherit
+  the provider-required host, network, application, and authentication-device
+  boundary.
 - Operators use explicit output paths, verify complete generated sets before
   distribution, and conduct synthetic recovery rehearsals.
 - Encrypted artifacts, key shares, and wrapping credentials follow the approved

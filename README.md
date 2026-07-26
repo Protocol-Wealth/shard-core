@@ -21,6 +21,7 @@ encryption, threshold recovery, and fail-closed file handling.
 | AEAD plus Shamir threshold protection | Included |
 | Corrupt-extra-share recovery and ambiguity detection | Included |
 | Fordefi Recovery Phrases workflow | Included |
+| Custodian, peer, and multi-party custody guidance | Included |
 | Optional SLIP-39 support | `.[slip39]` extra |
 | Reproducible, hash-verified offline bundle pipeline | [Included](OFFLINE_BUILD.md) |
 | Implicit plaintext output or silent overwrite | Refused |
@@ -148,6 +149,31 @@ The commands prompt without echo. For controlled automation, use a private
 regular file with `--passphrase-file`; environment-variable passphrases emit a
 warning.
 
+### Custodians, businesses, and trusted people
+
+The current source-tree wizard exposes **Choose a custody route** as an
+explicit, non-default menu option. The existing commands can also be used
+directly:
+
+| Route | Capability | `shard-core` boundary |
+|---|---|---|
+| CoinCover Key Vault CLI | Locally encrypts the original key file and uploads provider ciphertext | Separate native workflow; do not create SHEN/SHRD first |
+| [Station70](https://www.station70.com/) native Fordefi/Bunker | Uses Fordefi Public Key Upload and a Station70 recovery policy | Separate native workflow; `shard-core` is not required |
+| Station70 Custom Upload | Browser-encrypts supplied text or a file before upload | Separate by default; SHEN/SHRD would be a deliberate nested design |
+| Station70 SWAT | Provider-to-provider continuity into a linked standby wallet | Not a SHEN or SHRD file-recovery path |
+| External provider or person | Holds one opaque SHEN file and returns it byte-for-byte | Store the wrapping credential on a separate approved path |
+| Two or more independent holders | Each holds one SHRD file under an `n-of-m` policy | Every holder must confirm exact SHRD acceptance and retrieval |
+
+For example, a `2-of-3` SHRD policy can use the labels `protocol`,
+`station70`, and `trusted-friend`, but naming a holder does not establish that
+it accepts the artifact. Provider capabilities and release requirements must
+be confirmed against current documentation and the applicable agreement.
+
+The project never calls a vendor API or uploads an artifact. See
+[docs/CUSTODY-PATTERNS.md](docs/CUSTODY-PATTERNS.md) for CoinCover-native,
+Station70 Bunker and Custom Upload, Nemean, peer-to-peer, tri-party, and
+nested-provider patterns.
+
 ### Fordefi backup choice
 
 Fordefi lets the operator choose among Public Key Upload, Recovery Phrases,
@@ -156,7 +182,9 @@ and managed provider or hardware-backed methods.
 ```text
 Fordefi backup method
     |
-    +--> Public Key Upload / native CoinCover / Station70 / YubiKey
+    +--> Public Key Upload
+    |        +--> self-managed RSA or YubiKey
+    |        +--> managed CoinCover or Station70 Bunker
     |        +--> public-key recovery path; shard-core is not required
     |
     +--> Recovery Phrases
@@ -228,11 +256,14 @@ Wire-format changes require a separate compatibility and cryptographic review.
 ## Documentation
 
 - [CEREMONY.md](CEREMONY.md): generic safe operator workflow.
+- [docs/CUSTODY-PATTERNS.md](docs/CUSTODY-PATTERNS.md): external custodian,
+  peer, and multi-party patterns.
 - [docs/FORDEFI-DISASTER-RECOVERY.md](docs/FORDEFI-DISASTER-RECOVERY.md): Fordefi-specific workflow.
 - [OFFLINE_BUILD.md](OFFLINE_BUILD.md): reproducible verified bundle build.
 - [THREAT_MODEL.md](THREAT_MODEL.md): assets, adversaries, assumptions, and scope.
 - [SECURITY.md](SECURITY.md): vulnerability disclosure and support policy.
-- [AGENTS.md](AGENTS.md): rules for AI agents assisting a human.
+- [AGENTS.md](AGENTS.md): canonical rules for AI agents assisting a human;
+  duplicate `AGENTS.txt` and `LLMS.txt` entry files are intentionally omitted.
 - [CHANGELOG.md](CHANGELOG.md): release history and compatibility notes.
 - [CONTRIBUTING.md](CONTRIBUTING.md): development and review workflow.
 - [SUPPORT.md](SUPPORT.md): support boundaries and safe issue reporting.

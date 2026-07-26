@@ -11,11 +11,13 @@ Read these in order:
 2. `THREAT_MODEL.md` for assets, adversaries, assumptions, and non-goals.
 3. `SECURITY.md` for disclosure, audit, and version-support policy.
 4. `CEREMONY.md` for the generic human-operated custody workflow.
-5. `docs/FORDEFI-DISASTER-RECOVERY.md` for the Fordefi workflow.
-6. `OFFLINE_BUILD.md` for the verified offline build boundary.
-7. `RELEASING.md` for the stable release and Trusted Publishing procedure.
-8. `release/VERIFY.md` when handling a generated offline bundle.
-9. Current Fordefi documentation linked from the Fordefi runbook.
+5. `docs/CUSTODY-PATTERNS.md` for provider-native, external-custodian,
+   peer-to-peer, and multi-party patterns.
+6. `docs/FORDEFI-DISASTER-RECOVERY.md` for the Fordefi workflow.
+7. `OFFLINE_BUILD.md` for the verified offline build boundary.
+8. `RELEASING.md` for the stable release and Trusted Publishing procedure.
+9. `release/VERIFY.md` when handling a generated offline bundle.
+10. Current vendor documentation linked from the applicable runbook.
 
 Do not rely on an old chat transcript when repository or vendor documentation
 is available. `AGENTS.md` is the AI guidance entry point; a duplicate
@@ -29,6 +31,10 @@ When guiding an operator:
   ask whether the operator selected Public Key Upload, Recovery Phrases, or a
   managed provider/hardware flow. Do not assume Recovery Phrases and do not
   apply `shard-core` to a public-key backup without a documented reason.
+- When Station70 is mentioned, identify whether the operator means its native
+  Fordefi/Bunker integration, Bunker Custom Upload, SWAT, or an independently
+  agreed role holding SHEN or one SHRD artifact. These are different recovery
+  paths and must not be combined implicitly.
 - Work one numbered step at a time and wait for the operator to confirm only
   non-secret results such as `PASS`, filenames, or approved ciphertext, tool,
   archive, and release-artifact SHA-256 values.
@@ -49,9 +55,10 @@ When guiding an operator:
   private-key recovery. Guide the human through Fordefi's current official
   instructions as a separate offline step.
 - Do not assume a Fordefi phrase is BIP-39 and do not silently select SLIP-39.
-- Do not invent Qapture, Nemean, CoinCover, or other custodian requirements.
-  Treat their accepted file format, custody role, and key-release procedure as
-  contractual inputs the human must confirm.
+- Do not invent Qapture, Nemean, CoinCover, Station70, or other custodian
+  requirements. Treat their accepted file format, custody role, authentication
+  factors, quorum, and key-release procedure as contractual inputs the human
+  must confirm against current official documentation.
 
 ## Cryptographic and compatibility boundaries
 

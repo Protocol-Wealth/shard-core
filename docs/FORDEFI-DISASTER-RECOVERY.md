@@ -13,8 +13,11 @@ Official references:
 - [Fordefi: Backup methods](https://docs.fordefi.com/user-guide/backup-and-recover-private-keys)
 - [Fordefi: Use Public Key Upload](https://docs.fordefi.com/user-guide/backup-and-recover-private-keys/backup-private-keys-upload)
 - [Fordefi: Use Recovery Phrases](https://docs.fordefi.com/user-guide/backup-and-recover-private-keys/backup-private-keys-phrases)
+- [Fordefi: Use Station70](https://docs.fordefi.com/user-guide/backup-and-recover-private-keys/backup-private-keys-station70)
 - [Fordefi: Manage Your Backup](https://docs.fordefi.com/user-guide/backup-and-recover-private-keys/manage-backup)
 - [Fordefi: Recover Private Keys](https://docs.fordefi.com/user-guide/backup-and-recover-private-keys/recovery/recover-private-keys)
+- [Station70: Request a Fordefi backup](https://kb.station70.com/requesting-your-fordefi-backup)
+- [Station70: Recover a backup](https://kb.station70.com/how-to-recover-your-backup)
 
 Check those pages before every production ceremony because vendor screens,
 downloads, checksums, and recovery-tool commands can change.
@@ -48,6 +51,16 @@ Station70 and a hardware-backed YubiKey flow. In Fordefi's native
 CoinCover retains the matching private key and Fordefi encrypts the backup to
 CoinCover's public key. That differs from asking CoinCover to store a
 shard-core `.shen` file.
+
+In Fordefi's native
+[Station70 method](https://docs.fordefi.com/user-guide/backup-and-recover-private-keys/backup-private-keys-station70),
+Station70 generates the backup-key pair and provides a PEM public key and
+backup email for Fordefi's Public Key Upload flow. The encrypted Fordefi
+backup is then enrolled into a Station70 Bunker recovery policy. Station70's
+current documentation describes recovery-user approvals and YubiKey
+authentication. This is also separate from asking Station70 Custom Upload to
+store SHEN or one SHRD file, and `shard-core` is not required for the native
+Fordefi/Bunker route.
 
 ### Option 2: recovery phrases
 
@@ -86,7 +99,7 @@ For Fordefi `2-of-2`, recovery requires the encrypted backup snapshot and both
 Fordefi phrases. Protecting P1 or P2 with SHEN or SHRD does not change
 Fordefi's threshold; it changes how your organization stores that phrase.
 
-## 3. Do not mix two different CoinCover models
+## 3. Do not mix managed-provider and shard-core models
 
 Fordefi's documented **Use CoinCover** method is a separate backup method. In
 that model, CoinCover holds a private RSA key and Fordefi receives the matching
@@ -95,6 +108,22 @@ public key.
 This runbook instead uses Fordefi **Recovery Phrases**. If CoinCover is asked
 to store `P2.shen`, CoinCover is acting as an external storage/custody provider
 under your agreement, not through Fordefi's native CoinCover integration.
+
+The same distinction applies to Station70:
+
+- **Native Fordefi/Bunker:** Fordefi Public Key Upload uses Station70's public
+  key and backup destination; Bunker governs the matching recovery material.
+- **Bunker Custom Upload:** the Station70 browser encrypts supplied text or a
+  file and uploads the ciphertext through Station70's general-purpose route.
+- **External SHEN/SHRD holder:** Station70 holds a shard-core artifact only if
+  the selected service and agreement explicitly accept it.
+- **SWAT:** Station70's provider-to-provider continuity route is not SHEN or
+  SHRD recovery.
+
+Do not add `shard-core` to the native Fordefi/Bunker path or supply a Fordefi
+phrase to Custom Upload merely because both products offer backup. Select one
+documented route, record its recovery dependencies, and rehearse it with
+synthetic material.
 
 Before transfer, obtain written answers from every external custodian:
 
