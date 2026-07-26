@@ -7,12 +7,10 @@
 `shard-core` protects sensitive bytes and recovery phrases with authenticated
 encryption, threshold recovery, and fail-closed file handling.
 
-> **Security status:** `0.3.0` is the current source release and has not
-> received an independent security audit. Tests and AI-assisted review are not
-> a security audit. Use synthetic material for evaluation and rehearse
-> recovery before protecting production secrets. The installation commands
-> below remain pinned to the last verified published release until `0.3.0`
-> publication is confirmed.
+> **Security status:** `0.3.0` is the current release and has not received an
+> independent security audit. Tests and AI-assisted review are not a security
+> audit. Use synthetic material for evaluation and rehearse recovery before
+> protecting production secrets.
 
 ## What it provides
 
@@ -83,20 +81,20 @@ Install the stable release from PyPI:
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install 'shard-core==0.2.0'
+python -m pip install 'shard-core==0.3.0'
 shard-core --version
 ```
 
 To include optional SLIP-39 support:
 
 ```bash
-python -m pip install 'shard-core[slip39]==0.2.0'
+python -m pip install 'shard-core[slip39]==0.3.0'
 ```
 
 To install the same immutable release from source instead:
 
 ```bash
-git clone --branch v0.2.0 --depth 1 \
+git clone --branch v0.3.0 --depth 1 \
   https://github.com/Protocol-Wealth/shard-core.git
 cd shard-core
 python3 -m venv .venv
