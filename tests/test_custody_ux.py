@@ -5,6 +5,7 @@ import io
 import sys
 import tempfile
 import unittest
+from itertools import combinations
 from pathlib import Path
 from unittest import mock
 
@@ -14,6 +15,10 @@ ROOT = Path(__file__).resolve().parents[1]
 FORDEFI_PHRASE = (
     "alpha bravo charlie delta echo foxtrot "
     "golf hotel india juliet kilo lima"
+)
+BIP39_FIXTURE = (
+    "abandon abandon abandon abandon abandon abandon "
+    "abandon abandon abandon abandon abandon about"
 )
 
 
@@ -227,11 +232,11 @@ class TestCustodyWizard(unittest.TestCase):
 
 class TestCustodyFileSafety(unittest.TestCase):
     def test_file_based_shrd_round_trip_preserves_trailing_newlines(self):
-        secret = b"synthetic report\r\n"
+        expected_bytes = b"synthetic report\r\n"
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "report.txt"
             out = Path(directory) / "shares"
-            source.write_bytes(secret)
+            source.write_bytes(expected_bytes)
             with mock.patch.object(
                 wizard,
                 "_ask",
@@ -253,7 +258,54 @@ class TestCustodyFileSafety(unittest.TestCase):
 
         self.assertEqual(len(payloads), 2)
         self.assertNotIn(None, payloads)
-        self.assertEqual(core.recover(payloads), secret)
+        self.assertEqual(core.recover(payloads), expected_bytes)
+
+    @unittest.skipUnless(wizard.slip39.available(), "slip39 extra not installed")
+    def test_written_slip39_shares_verify_with_slip39(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "shares"
+            output = io.StringIO()
+            with mock.patch.object(
+                sys.stdin,
+                "isatty",
+                return_value=True,
+            ), mock.patch.object(
+                wizard,
+                "_ask",
+                side_effect=["2", "", str(out)],
+            ), mock.patch.object(
+                wizard,
+                "_ask_int",
+                side_effect=[3, 2],
+            ), mock.patch.object(
+                wizard,
+                "_yn",
+                return_value=True,
+            ), mock.patch(
+                "getpass.getpass",
+                return_value=BIP39_FIXTURE,
+            ), contextlib.redirect_stdout(output):
+                wizard._wizard_split(fordefi_mode=False)
+
+            payloads = [
+                wizard._payload(str(path))
+                for path in sorted(out.glob("share-*.txt"))
+            ]
+
+        self.assertEqual(len(payloads), 3)
+        self.assertNotIn(None, payloads)
+        expected_entropy = wizard.slip39.bip39_to_entropy(BIP39_FIXTURE)
+        for selected in combinations(payloads, 2):
+            with self.subTest(selected=selected):
+                self.assertEqual(
+                    wizard.slip39.combine(list(selected)),
+                    expected_entropy,
+                )
+        self.assertNotIn("verification failed", output.getvalue())
+        self.assertIn(
+            "Verified every threshold combination",
+            output.getvalue(),
+        )
 
     def test_wizard_encryption_rejects_non_tty_before_reading_file(self):
         output = io.StringIO()

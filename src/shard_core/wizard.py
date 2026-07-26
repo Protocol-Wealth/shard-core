@@ -196,6 +196,32 @@ def _read_fordefi_secret() -> bytes | None:
     return secret
 
 
+def _verify_share_payloads(
+    payloads: list[str],
+    *,
+    kind: str,
+    secret: bytes,
+    threshold: int,
+) -> None:
+    """Verify every threshold subset using the matching share format."""
+    if kind == "protect":
+        verification = core.verify_complete_set(payloads)
+        if not verification.ok:
+            raise RuntimeError("not every threshold combination authenticated")
+        expected = secret
+        recover_subset = core.recover
+    elif kind == "slip39":
+        expected = slip39.bip39_to_entropy(secret.decode())
+        recover_subset = slip39.combine
+    else:
+        raise RuntimeError(f"unsupported share format: {kind}")
+
+    for selected in combinations(range(len(payloads)), threshold):
+        recovered = recover_subset([payloads[index] for index in selected])
+        if recovered != expected:
+            raise RuntimeError("round-trip plaintext mismatch")
+
+
 def _wizard_split(
     *,
     fordefi_mode: bool = False,
@@ -256,18 +282,17 @@ def _wizard_split(
         payloads = core.protect(secret, t, n)
         kind = "protect"
 
-    if kind == "protect":
-        try:
-            verification = core.verify_complete_set(payloads)
-            if not verification.ok:
-                raise RuntimeError("not every threshold combination authenticated")
-            for selected in combinations(range(n), t):
-                if core.recover([payloads[index] for index in selected]) != secret:
-                    raise RuntimeError("round-trip plaintext mismatch")
-        except (RuntimeError, ValueError) as exc:
-            print(f"Internal share-set self-test failed: {exc}")
-            print("No files were written.")
-            return
+    try:
+        _verify_share_payloads(
+            payloads,
+            kind=kind,
+            secret=secret,
+            threshold=t,
+        )
+    except Exception as exc:
+        print(f"Internal share-set self-test failed: {exc}")
+        print("No files were written.")
+        return
 
     output_dir = Path(out)
     paths = [output_dir / f"share-{label}.txt" for label in labels]
@@ -303,15 +328,13 @@ def _wizard_split(
             if payload is None:
                 raise RuntimeError("a written share could not be read back")
             written_payloads.append(payload)
-        verification = core.verify_complete_set(written_payloads)
-        if not verification.ok:
-            raise RuntimeError("not every written threshold combination authenticated")
-        for selected in combinations(range(n), t):
-            if core.recover(
-                [written_payloads[index] for index in selected]
-            ) != secret:
-                raise RuntimeError("written share round-trip plaintext mismatch")
-    except (RuntimeError, ValueError) as exc:
+        _verify_share_payloads(
+            written_payloads,
+            kind=kind,
+            secret=secret,
+            threshold=t,
+        )
+    except Exception as exc:
         print(f"Written share-set verification failed: {exc}")
         print("Do not distribute the written files.")
         return
