@@ -77,7 +77,8 @@ def run_wizard() -> None:
     print("  3) Recover a phrase / secret from shares")
     print("  4) Encrypt a file with a passphrase")
     print("  5) Decrypt a file")
-    choice = _ask("Choose 1-5", "1")
+    print("  6) Choose a custody route (provider / business / trusted people)")
+    choice = _ask("Choose 1-6", "1")
     if choice == "1":
         _wizard_split(fordefi_mode=True)
     elif choice == "2":
@@ -88,8 +89,73 @@ def run_wizard() -> None:
         _wizard_encrypt()
     elif choice == "5":
         _wizard_decrypt()
+    elif choice == "6":
+        _wizard_custody()
     else:
         print("Nothing to do.")
+
+
+def _wizard_custody() -> None:
+    print("\nChoose the protection and custody route before opening a secret:")
+    print("  1) A confirmed provider-native workflow")
+    print("  2) One SHEN encrypted file held by a provider or person")
+    print("  3) SHRD threshold shares held by 2 or more independent parties")
+    choice = _ask("Choose 1-3")
+
+    if choice == "1":
+        print("\nIdentify the exact provider method:")
+        print("  1) CoinCover Key Vault CLI")
+        print("  2) Fordefi managed CoinCover Public Key Upload")
+        print("  3) Station70 native Fordefi/Bunker")
+        print("  4) Station70 Bunker Custom Upload")
+        print("  5) Station70 SWAT")
+        print("  6) Another confirmed provider-native method")
+        method = _ask("Choose 1-6")
+        if method not in {"1", "2", "3", "4", "5", "6"}:
+            print("Nothing to do.")
+            return
+        print("\nNo shard-core artifact will be created.")
+        print("Cancel any shard-core encryption prompt. Use the provider's current")
+        print("official console, CLI, wallet integration, and agreement for its")
+        print("required input, encryption, credentials, upload, and recovery procedure.")
+        print("shard-core never requests provider API credentials or performs an upload.")
+        return
+
+    if choice == "2":
+        print("\nFirst confirm that the holder accepts and returns an opaque SHEN")
+        print("Base64 text file byte-for-byte, and assign its wrapping credential")
+        print("to a separately approved path.")
+        if not _yn("Has the holder confirmed those requirements?", False):
+            print("Stop and obtain the holder's written format and release requirements.")
+            return
+        fordefi_mode = _yn(
+            "Is the protected material a Fordefi Recovery Phrase?",
+            False,
+        )
+        _wizard_encrypt(fordefi_mode=fordefi_mode)
+        return
+
+    if choice == "3":
+        print("\nEach provider, business, or trusted person receives one SHRD file.")
+        print("Confirm every external holder accepts and returns that exact file.")
+        print("A 2-of-2 policy has no loss tolerance; 2-of-3 tolerates one unavailable holder.")
+        if not _yn(
+            "Have all holders confirmed their custody and release requirements?",
+            False,
+        ):
+            print("Stop and obtain every holder's written custody and release requirements.")
+            return
+        fordefi_mode = _yn(
+            "Is the protected material a Fordefi Recovery Phrase?",
+            False,
+        )
+        _wizard_split(
+            fordefi_mode=fordefi_mode,
+            allow_slip39=False,
+        )
+        return
+
+    print("Nothing to do.")
 
 
 def _read_secret() -> bytes:
@@ -97,36 +163,52 @@ def _read_secret() -> bytes:
     print("  1) Read it from a file (recommended)")
     print("  2) Type or paste it now (hidden)")
     if _ask("Choose 1-2", "1") == "2":
+        if not sys.stdin.isatty():
+            print("Interactive secret entry requires a TTY.")
+            return b""
         return getpass.getpass("Paste the phrase (hidden): ").encode()
     path = _ask("Path to the file")
     try:
-        return Path(path).read_bytes().rstrip(b"\r\n")
+        return Path(path).read_bytes()
     except OSError as exc:
         _read_error(path, exc)
         return b""
 
 
-def _wizard_split(*, fordefi_mode: bool = False) -> None:
+def _read_fordefi_secret() -> bytes | None:
+    """Read and validate a Fordefi phrase twice without echoing it."""
+    if not sys.stdin.isatty():
+        print("Interactive Fordefi phrase entry requires a TTY.")
+        return None
+    try:
+        secret = fordefi_support.canonicalize_recovery_phrase(
+            getpass.getpass("Fordefi recovery phrase: ")
+        )
+        confirmation = fordefi_support.canonicalize_recovery_phrase(
+            getpass.getpass("Confirm Fordefi recovery phrase: ")
+        )
+    except ValueError as exc:
+        print(f"Invalid Fordefi recovery phrase: {exc}")
+        return None
+    if confirmation != secret:
+        print("Fordefi recovery phrase entries do not match.")
+        return None
+    return secret
+
+
+def _wizard_split(
+    *,
+    fordefi_mode: bool = False,
+    allow_slip39: bool = True,
+) -> None:
     print("\nThis splits your secret into shares:")
-    print("  - Each share ALONE reveals nothing.")
+    print("  - One below-threshold share cannot reveal the plaintext.")
+    print("  - Share headers and ciphertext length still expose limited metadata.")
     print("  - The secret stays encrypted until enough shares are combined.")
     print("  - You choose the threshold: how many shares are needed to unlock it.\n")
     if fordefi_mode:
-        if not sys.stdin.isatty():
-            print("Interactive Fordefi phrase entry requires a TTY.")
-            return
-        try:
-            secret = fordefi_support.canonicalize_recovery_phrase(
-                getpass.getpass("Fordefi recovery phrase: ")
-            )
-            confirmation = fordefi_support.canonicalize_recovery_phrase(
-                getpass.getpass("Confirm Fordefi recovery phrase: ")
-            )
-        except ValueError as exc:
-            print(f"Invalid Fordefi recovery phrase: {exc}")
-            return
-        if confirmation != secret:
-            print("Fordefi recovery phrase entries do not match.")
+        secret = _read_fordefi_secret()
+        if secret is None:
             return
     else:
         secret = _read_secret()
@@ -156,9 +238,9 @@ def _wizard_split(*, fordefi_mode: bool = False) -> None:
     )
 
     use_slip39 = False
-    if not fordefi_mode and slip39.available():
+    if not fordefi_mode and allow_slip39 and slip39.available():
         use_slip39 = _yn("Use SLIP-39 word-list shares (recommended for seed phrases)?", True)
-    elif not fordefi_mode:
+    elif not fordefi_mode and allow_slip39:
         print("  (SLIP-39 not installed — using encrypted shards. For word lists:")
         print("   pip install 'shard-core[slip39]')")
 
@@ -214,12 +296,36 @@ def _wizard_split(*, fordefi_mode: bool = False) -> None:
         print(f"Cannot write share set: {exc}")
         return
 
-    print(f"\nWrote {n} shares. Any {t} together rebuild the secret; fewer than {t} reveal nothing.")
+    try:
+        written_payloads = []
+        for path in paths:
+            payload = _payload(str(path))
+            if payload is None:
+                raise RuntimeError("a written share could not be read back")
+            written_payloads.append(payload)
+        verification = core.verify_complete_set(written_payloads)
+        if not verification.ok:
+            raise RuntimeError("not every written threshold combination authenticated")
+        for selected in combinations(range(n), t):
+            if core.recover(
+                [written_payloads[index] for index in selected]
+            ) != secret:
+                raise RuntimeError("written share round-trip plaintext mismatch")
+    except (RuntimeError, ValueError) as exc:
+        print(f"Written share-set verification failed: {exc}")
+        print("Do not distribute the written files.")
+        return
+
+    print("Verified every threshold combination from the written share files.")
+    print(
+        f"\nWrote {n} shares. Any {t} together rebuild the secret; "
+        f"fewer than {t} cannot decrypt the plaintext."
+    )
     for p in written:
         print(f"  {p}")
     print("\nNext steps:")
     print("  - Give ONE share to each holder; store them in separate places.")
-    print("  - A holder who only stores a share cannot unlock anything alone.")
+    print("  - A holder who only stores one share cannot recover the plaintext alone.")
     print("  - To rebuild later, run this wizard again and choose 'Recover'.")
 
 
@@ -270,22 +376,40 @@ def _wizard_recover() -> None:
     print(f"\nRecovered -> {out}")
 
 
-def _wizard_encrypt() -> None:
-    path = _ask("File to encrypt")
-    try:
-        data = Path(path).read_bytes()
-    except OSError as exc:
-        _read_error(path, exc)
+def _wizard_encrypt(*, fordefi_mode: bool = False) -> None:
+    if not sys.stdin.isatty():
+        print("Interactive encryption requires a TTY.")
         return
+    if fordefi_mode:
+        data = _read_fordefi_secret()
+        if data is None:
+            return
+    else:
+        path = _ask("File to encrypt")
+        try:
+            data = Path(path).read_bytes()
+        except OSError as exc:
+            _read_error(path, exc)
+            return
     pw = getpass.getpass("Passphrase: ")
+    if not pw:
+        print("Empty passphrase — nothing to do.")
+        return
+    pw_bytes = pw.encode()
+    if len(pw_bytes) > 4096:
+        print("Passphrase is too large — nothing to do.")
+        return
     if getpass.getpass("Confirm passphrase: ") != pw:
         print("Passphrases do not match.")
         return
-    out = _ask("Write encrypted file to", "secret.enc")
+    out = _ask(
+        "Write encrypted file to",
+        "fordefi-phrase.shen" if fordefi_mode else "secret.shen",
+    )
     try:
         safeio.atomic_write_bytes(
             out,
-            (core.encrypt(data, pw.encode()) + "\n").encode(),
+            (core.encrypt(data, pw_bytes) + "\n").encode(),
         )
     except (OSError, ValueError) as exc:
         print(f"Cannot write encrypted file: {exc}")

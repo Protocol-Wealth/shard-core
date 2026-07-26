@@ -10,9 +10,18 @@ Choose one model before handling a secret:
 
 | Model | Use when | Recovery dependency |
 |---|---|---|
+| Provider-native workflow | A provider requires its own CLI, browser, wallet integration, keys, or upload | Provider artifacts, credentials, devices, and release process |
 | SHEN passphrase encryption | One holder stores ciphertext | SHEN file plus separate wrapping credential |
 | SHRD threshold protection | Multiple holders must cooperate | Any valid threshold of SHRD files |
 | SLIP-39 | Human-readable shares are required for independently confirmed compatible material | Valid SLIP-39 threshold plus optional passphrase |
+
+Provider-native workflows are outside `shard-core`. Examples include
+CoinCover's Key Vault CLI, Station70's native Bunker integrations, and
+Station70 Custom Upload. Do not first create SHEN or SHRD output when the
+provider requires the original plaintext or its own browser/CLI encryption.
+If an external provider will instead hold SHEN or one SHRD file, confirm that
+exact format and its release procedure in writing. See
+[docs/CUSTODY-PATTERNS.md](docs/CUSTODY-PATTERNS.md).
 
 Do not layer mechanisms without stating which risk the added layer addresses.
 Every additional credential or holder can also create a new availability risk.
@@ -79,6 +88,8 @@ will actually be distributed.
 - Compare its artifact SHA-256 at deposit and receipt.
 - Confirm the custodian does not alter bytes, line endings, filenames, or
   archive structure.
+- Confirm whether the accepted input is original plaintext, SHEN, SHRD, or a
+  provider-defined format.
 - Confirm release authentication, authorization, expected timing, and contact
   escalation from the actual custody agreement.
 - Do not send a SHEN artifact and its wrapping credential through the same path
