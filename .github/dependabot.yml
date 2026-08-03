@@ -1,0 +1,25 @@
+version: 2
+
+# This repository previously had NO dependabot configuration, so nothing in it
+# had ever received a dependency or action update, including security patches.
+#
+# github-actions is included deliberately: without it, action references and any
+# pinned reusable-workflow SHA freeze permanently. That is not hypothetical --
+# three other repos in this estate held a stale reusable-workflow pin for a week
+# for exactly this reason, which made an upstream fix inert where it mattered.
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns: ["*"]
