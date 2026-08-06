@@ -1,5 +1,5 @@
 # Exact, hash-locked dependencies used only for hosted CI test evidence.
 pycryptodome==3.23.0 --hash=sha256:c8987bd3307a39bc03df5c8e0e3d8be0c4c3518b7f044b0f4c15d1aa78f52575
 shamir-mnemonic==0.3.0 --hash=sha256:188c6b5bd00d5e756e12e2b186c3cb7c98ff7ff44df608d4c1d2077f6b6e730f
-mnemonic==0.20 --hash=sha256:acd2168872d0379e7a10873bb3e12bf6c91b35de758135c4fbd1015ef18fafc5
+mnemonic==0.21 --hash=sha256:1fe496356820984f45559b1540c80ff10de448368929b9c60a2b55744cc88acf --hash=sha256:72dc9de16ec5ef47287237b9b6943da11647a03fe7cf1f139fc3d7c4a7439288
 packaging==26.2 --hash=sha256:5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e
