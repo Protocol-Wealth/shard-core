@@ -6,4 +6,4 @@
 #   4. Rebuild and re-review the full offline bundle
 pycryptodome==3.23.0
 shamir-mnemonic==0.3.0
-mnemonic==0.20
+mnemonic==0.21
