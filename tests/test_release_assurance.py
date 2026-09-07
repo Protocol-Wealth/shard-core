@@ -10,8 +10,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_ACTIONS = {
-    "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
-    "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
 }
 EXPECTED_RUNTIME_HASHES = {
     "pycryptodome": "c8987bd3307a39bc03df5c8e0e3d8be0c4c3518b7f044b0f4c15d1aa78f52575",
@@ -94,7 +94,7 @@ class ReleaseAssuranceTests(unittest.TestCase):
         self.assertIn("python -m build --no-isolation", workflow)
         self.assertIn(
             "actions/upload-artifact@"
-            "ea165f8d65b6e75b540449e92b4886f43607fa02",
+            "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
             build_job,
         )
         self.assertNotIn("id-token: write", build_job)
@@ -103,7 +103,7 @@ class ReleaseAssuranceTests(unittest.TestCase):
         self.assertIn("id-token: write", publish_job)
         self.assertIn(
             "actions/download-artifact@"
-            "d3f86a106a0bac45b974a628896c90dbdf5c8093",
+            "70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3",
             publish_job,
         )
         self.assertIn(
