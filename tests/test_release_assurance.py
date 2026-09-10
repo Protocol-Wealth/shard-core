@@ -13,21 +13,36 @@ EXPECTED_ACTIONS = {
     "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
     "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
 }
+# Values are TUPLES of digests, matching _locked(): pip pins one hash per
+# distribution, so a requirement can legitimately carry more than one. Comparing
+# the whole tuple keeps this exact -- a lock that gained an unexpected second
+# distribution fails here rather than passing on its first hash.
 EXPECTED_RUNTIME_HASHES = {
-    "pycryptodome": "c8987bd3307a39bc03df5c8e0e3d8be0c4c3518b7f044b0f4c15d1aa78f52575",
-    "shamir-mnemonic": "188c6b5bd00d5e756e12e2b186c3cb7c98ff7ff44df608d4c1d2077f6b6e730f",
-    "mnemonic": "acd2168872d0379e7a10873bb3e12bf6c91b35de758135c4fbd1015ef18fafc5",
+    "pycryptodome": ("c8987bd3307a39bc03df5c8e0e3d8be0c4c3518b7f044b0f4c15d1aa78f52575",),
+    "shamir-mnemonic": ("188c6b5bd00d5e756e12e2b186c3cb7c98ff7ff44df608d4c1d2077f6b6e730f",),
+    "mnemonic": ("acd2168872d0379e7a10873bb3e12bf6c91b35de758135c4fbd1015ef18fafc5",),
 }
 
 
-def _locked(path: Path) -> dict[str, tuple[str, str]]:
-    result = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+def _locked(path: Path) -> dict[str, tuple[str, tuple[str, ...]]]:
+    """Parse a hashed requirements file into {name: (version, digests)}.
+
+    Digests are a TUPLE because pip pins one hash per distribution, so a
+    requirement satisfied by both a wheel and an sdist carries two. This used
+    `split(" --hash=sha256:", 1)`, which on a two-hash line returned the first
+    digest with `" --hash=sha256:<second>"` still glued to it -- and the callers
+    then asserted that against `^[0-9a-f]{64}$` and failed. It blocked every
+    Dependabot PR in this repo, because any update that adds a second
+    distribution produces exactly that line.
+    """
+    result: dict[str, tuple[str, tuple[str, ...]]] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        name_version, digest = line.split(" --hash=sha256:", 1)
-        name, version = name_version.split("==", 1)
-        result[name] = (version, digest)
+        parts = line.split(" --hash=sha256:")
+        name, version = parts[0].split("==", 1)
+        result[name] = (version, tuple(parts[1:]))
     return result
 
 
@@ -176,9 +191,13 @@ class ReleaseAssuranceTests(unittest.TestCase):
             set(locked),
             {"pip", "build", "setuptools", "wheel", "packaging", "pyproject-hooks"},
         )
-        for version, digest in locked.values():
+        for version, digests in locked.values():
             self.assertRegex(version, r"^[0-9]+(?:\.[0-9]+)+$")
-            self.assertRegex(digest, r"^[0-9a-f]{64}$")
+            # An unhashed line parses to an EMPTY tuple, and a loop over it
+            # asserts nothing at all. Require at least one before checking shape.
+            self.assertTrue(digests, "requirement is pinned with no hash")
+            for digest in digests:
+                self.assertRegex(digest, r"^[0-9a-f]{64}$")
 
     def test_legacy_builder_is_disabled(self):
         script = (
@@ -420,9 +439,11 @@ class ReleaseAssuranceTests(unittest.TestCase):
                 "packaging",
             },
         )
-        for version, digest in locked.values():
+        for version, digests in locked.values():
             self.assertRegex(version, r"^[0-9]+(?:\.[0-9]+)+$")
-            self.assertRegex(digest, r"^[0-9a-f]{64}$")
+            self.assertTrue(digests, "requirement is pinned with no hash")
+            for digest in digests:
+                self.assertRegex(digest, r"^[0-9a-f]{64}$")
         runtime = _locked(
             ROOT
             / "release/locks/"
