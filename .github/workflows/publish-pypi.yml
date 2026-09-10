@@ -80,9 +80,9 @@ jobs:
       id-token: write
     steps:
       - name: Retrieve validated distributions
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0 reviewed 2026-09-07
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0 reviewed 2026-09-07
         with:
           name: pypi-distributions
           path: dist/
       - name: Publish with PyPI Trusted Publishing
-        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1 reviewed 2026-07-25
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1 reviewed 2026-07-25
