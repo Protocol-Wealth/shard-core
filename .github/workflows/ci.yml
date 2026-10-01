@@ -11,10 +11,17 @@ on:
 jobs:
   test:
     name: test (py ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    # The 3.9 leg stays on Ubuntu 24.04: actions/setup-python has no 3.9 build
+    # for the Ubuntu 26.04 image that ubuntu-latest becomes from 2026-10-19, and
+    # "test (py 3.9)" is a required check, so on 26.04 every PR would be blocked.
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        python-version: ["3.9", "3.14"]
+        include:
+          - python-version: "3.9"
+            os: ubuntu-24.04
+          - python-version: "3.14"
+            os: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
