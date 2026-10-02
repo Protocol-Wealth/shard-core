@@ -9,8 +9,8 @@ description = "Authenticated local encryption and Shamir threshold recovery with
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{ name = "Protocol Wealth LLC" }]
-license = "Apache-2.0 OR MIT-0"
-license-files = ["LICENSE", "LICENSE-MIT-0"]
+license = "MIT-0 OR Apache-2.0"
+license-files = ["LICENSE-MIT-0", "LICENSE-APACHE"]
 keywords = [
   "shamir",
   "secret-sharing",

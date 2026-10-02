@@ -67,9 +67,9 @@ class ReleaseAssuranceTests(unittest.TestCase):
             project,
         )
         self.assertIn('requires = ["setuptools>=77"]', project)
-        self.assertIn('license = "Apache-2.0 OR MIT-0"', project)
+        self.assertIn('license = "MIT-0 OR Apache-2.0"', project)
         self.assertIn(
-            'license-files = ["LICENSE", "LICENSE-MIT-0"]',
+            'license-files = ["LICENSE-MIT-0", "LICENSE-APACHE"]',
             project,
         )
         self.assertNotIn("license = { text =", project)
