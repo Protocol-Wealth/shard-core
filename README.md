@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Protocol-Wealth/shard-core/actions/workflows/ci.yml/badge.svg)](https://github.com/Protocol-Wealth/shard-core/actions/workflows/ci.yml)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-1f6feb)](https://www.python.org/)
-[![License: Apache--2.0 OR MIT--0](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT--0-2ea44f)](LICENSE)
+[![License: MIT--0 OR Apache--2.0](https://img.shields.io/badge/license-MIT--0%20OR%20Apache--2.0-2ea44f)](#license)
 
 `shard-core` protects sensitive bytes and recovery phrases with authenticated
 encryption, threshold recovery, and fail-closed file handling.
@@ -278,4 +278,9 @@ PYTHONPATH=src python -O -m unittest discover -s tests -v
 
 ## License
 
-Dual-licensed under Apache-2.0 or MIT-0. See [LICENSE](LICENSE) and [LICENSE-MIT-0](LICENSE-MIT-0).
+Licensed under either MIT-0 or Apache-2.0, at your option.
+
+- MIT No Attribution: [LICENSE-MIT-0](LICENSE-MIT-0)
+- Apache License 2.0: [LICENSE-APACHE](LICENSE-APACHE)
+
+SPDX-License-Identifier: `MIT-0 OR Apache-2.0`
