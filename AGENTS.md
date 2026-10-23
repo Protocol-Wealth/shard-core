@@ -74,7 +74,9 @@ When guiding an operator:
 
 ## Repository work
 
-- Use Python 3.11 for Stage 6 builder-boundary tests.
+- Use Python 3.11 for Stage 6 builder-boundary tests. `src/` and `tests/` must
+  also run on Python 3.9 and 3.14 (required checks `test (py 3.9)` and
+  `test (py 3.14)`).
 - Run normal and optimized tests for security-sensitive changes:
 
 ```bash
